@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --background: #06070a;
+  --surface: #0b0d12;
+  --surface-raised: #10131a;
+  --surface-active: #151923;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text: #f4f7fb;
+  --text-muted: #8f98a9;
+  --text-subtle: #646d7d;
+  --signal: #42e8c4;
+  --pulse: #8a8cff;
+  --danger: #ff6b7a;
+  --warning: #f5be63;
+  --sidebar-width: 17rem;
+  --header-height: 4.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% -10%, rgba(102, 104, 245, 0.13), transparent 32rem),
+    radial-gradient(circle at 95% 12%, rgba(25, 200, 165, 0.08), transparent 28rem),
+    var(--background);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(66, 232, 196, 0.28);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 0.65rem;
+  height: 0.65rem;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: 0.18rem solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer components {
+  .surface {
+    @apply border border-white/[0.08] bg-ink-900/80 shadow-panel backdrop-blur-xl;
+  }
+
+  .surface-raised {
+    @apply border border-white/[0.08] bg-ink-850/90;
+  }
+
+  .eyebrow {
+    @apply text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-signal-400;
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-white/10 bg-ink-950/60 px-3.5 py-3 text-sm text-white placeholder:text-slate-600 transition duration-200 hover:border-white/20 focus:border-signal-400/60 focus:outline-none focus:ring-4 focus:ring-signal-400/10;
+  }
+
+  .label {
+    @apply mb-2 block text-xs font-medium text-slate-300;
+  }
+
+  .noise::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.025;
+    z-index: 50;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E");
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

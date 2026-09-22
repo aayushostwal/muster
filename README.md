@@ -2,9 +2,10 @@
 
 Muster is a self-hosted, local-first control plane for Claude Code and Codex
 agent sessions. It replaces a desktop full of terminal tabs with a single
-web UI: Projects group the directories, MCP servers, and tools an agent is
-allowed to touch; Tasks are the unit of agent work, each with its own
-persistent chat; creating a Task or sending it a message is the trigger —
+web UI. Directories, MCP connectors, agents, and skills live in global
+registries; projects receive explicit directory grants and can override the
+globally available capabilities. Tasks are the unit of agent work, each with
+its own persistent chat; creating a Task or sending it a message is the trigger —
 there is no separate "run" button, no queue to babysit. Postgres and the
 frontend run in Docker; the backend runs natively on your host so agent
 processes get direct filesystem access to whatever you bind, with no
@@ -70,11 +71,13 @@ Vite, run `make up` rather than `make db-up`.
 - Get blocked mid-run — a permission prompt or a clarifying question lands
   directly in the Task's chat and flips its status to *Waiting on You*.
   There's no separate notification channel to check.
-- Bind directories, MCP servers, and tools once at the Project level; every
-  Task inside it inherits them automatically.
-- Switch a Task's model or context strategy mid-conversation without losing
-  history, and compress a long conversation into a summary while the full
-  raw transcript stays one click away.
+- Manage directories, MCP connectors, agents, and skills once in global
+  registries. Projects explicitly bind directories and can enable or disable
+  every other capability without duplicating configuration.
+- Inspect every invocation's native Claude/Codex session id, API token usage,
+  tool calls, diffs, reasoning, runtime logs, and delegated-agent activity.
+- Select an ordered model chain from the live local CLI catalog, tune thinking
+  effort, and switch context strategy without losing conversation history.
 - Schedule recurring agent runs with Cron Jobs — they land on the same
   Kanban board as anything triggered by hand.
 - Trust that a transient failure (a usage limit, a network blip) retries
@@ -89,7 +92,7 @@ Vite, run `make up` rather than `make db-up`.
 | Module | Purpose | Docs |
 | --- | --- | --- |
 | `backend/` | FastAPI + async SQLAlchemy + Postgres service. Owns the data model, the REST/WebSocket API, the process manager that spawns and streams the `claude`/`codex` CLIs, failure classification and retry, context compression, and the cron scheduler. | [`backend/README.md`](backend/README.md) |
-| `frontend/` | React + Vite + TypeScript SPA. Projects list → Project detail (directories/MCP/tools/artifacts/cron/secrets) → Kanban Task board → Task chat, all driven by React Query plus a live per-task WebSocket. | [`frontend/README.md`](frontend/README.md) |
+| `frontend/` | Next.js App Router + TypeScript + Tailwind command center. Global registries → Project access controls → Kanban task board → compact live execution console, driven by TanStack Query and per-task WebSockets. | [`frontend/README.md`](frontend/README.md) |
 | `cli/` | `musterctl` — the single command covering install, start/stop/restart, status, logs, upgrade, uninstall, database backup/restore, config, and a `doctor` healthcheck, across both launchd and systemd. | [`cli/README.md`](cli/README.md) |
 | `scripts/` | `install.sh` and the launchd/systemd service templates it substitutes at install time — the one-shot path from a bare machine to a running Muster instance. | [`scripts/README.md`](scripts/README.md) |
 | `docs/` | `SPEC.md` (the API/WebSocket contract, process-manager design, and agent-backend adapter behavior that every module above is implemented against) and `OPERATIONS.md` (the full `musterctl` reference and install/upgrade/uninstall flow). | [`docs/SPEC.md`](docs/SPEC.md) · [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
@@ -98,11 +101,14 @@ Vite, run `make up` rather than `make db-up`.
 
 | Entity | What it is |
 | --- | --- |
-| **Project** | Top-level container: name, description, linked directories, MCP server and tool configs, Artifacts, and default backend/model/context settings. |
-| **Task** | The unit of agent work inside a Project — title, initial prompt, status, backend, model, context strategy, and its own Chat. |
+| **Project** | A workspace with explicit directory grants, per-capability overrides, artifacts, schedules, secrets, and default runtime settings. |
+| **Global capability** | A reusable directory, MCP connector, agent profile, or skill. MCP/agent/skill resources are available to projects by default; directories require an explicit grant. |
+| **Task** | The unit of agent work inside a Project — prompt, runtime, ordered model chain, thinking level, context strategy, and its own Chat. |
 | **Chat** | The ordered Messages tied to a Task — user, agent, and system senders, with a blocking-question flag for the human-in-the-loop flow. |
+| **Invocation** | One Claude or Codex process run, including native session id, selected model, status, and input/output/cache token counts. |
+| **Task event** | A structured, collapsible tool call, diff, reasoning block, runtime log, or delegated-agent event. |
 | **Artifact** | A named binding inside a Project, e.g. a GitHub repo tied to a local path and optionally a remote service URL. |
-| **Directory / MCP / Tool binding** | Project-scoped grants — a local path with a read or read-write scope, or an MCP server / tool config — applied automatically to every Task in that Project. |
+| **Directory binding** | A project-scoped read or read-write grant to a globally registered filesystem root. |
 | **Cron Job** | A scheduled Task template: a cron expression plus the prompt/backend/model to run, still surfaced on the same Task board. |
 | **Context Snapshot** | A compressed summary of a Task's chat history, stored alongside — never in place of — the full raw transcript. |
 
@@ -116,7 +122,7 @@ interval logged inline as a system message.
 | --- | --- |
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, APScheduler |
 | Database | PostgreSQL 16 — chosen for safe concurrent writes across simultaneous Task runs |
-| Frontend | React, Vite, TypeScript, React Query, react-router |
+| Frontend | Next.js App Router, React, TypeScript, Tailwind CSS, Framer Motion, TanStack Query |
 | Agent backends | `claude` (Claude Code CLI, headless `stream-json` mode) and `codex` (Codex CLI, `exec --json` mode) |
 | Deployment | Docker Compose for Postgres + frontend; the backend runs natively on the host as a launchd agent (macOS) or systemd `--user` unit (Linux) |
 

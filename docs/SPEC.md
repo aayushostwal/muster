@@ -9,7 +9,7 @@ this file. PRD reference: see the "Muster — PRD" doc content summarized below.
 
 ```
 backend/        FastAPI app (native host process in prod; runs in a venv)
-frontend/       React + Vite + TS SPA
+frontend/       Next.js App Router + TypeScript + Tailwind application
 cli/            musterctl (bash script wrapping docker compose + service mgmt)
 scripts/        install.sh, launchd plist template, systemd unit template
 docker-compose.yml   Postgres + frontend only (backend runs natively)
@@ -17,9 +17,11 @@ docker-compose.yml   Postgres + frontend only (backend runs natively)
 
 ## Data model
 
-Already implemented in `backend/app/db/models.py`:
-`Project, DirectoryBinding, McpBinding, ToolBinding, ProjectArtifact, Task,
-Message, ContextSnapshot, CronJob, TaskRunAttempt, Secret`.
+Implemented in `backend/app/db/models.py`:
+`Project, DirectoryResource, DirectoryBinding, GlobalMcpServer, AgentProfile,
+Skill, ProjectCapabilityOverride, Task, TaskInvocation, TaskEvent, Message,
+ContextSnapshot, CronJob, TaskRunAttempt, Secret` plus legacy project-scoped
+binding types retained for API compatibility.
 
 Enums: `AgentBackend(claude_code, codex)`,
 `TaskStatus(queued, running, waiting_on_you, done, failed, cancelled)`,
@@ -33,15 +35,40 @@ the created/updated resource. 404 on missing id, 422 on validation error
 (FastAPI default), 409 on conflicting unique constraint.
 
 ```
-GET    /api/projects                       list (excl. archived unless ?archived=true)
+GET    /api/projects                       list
 POST   /api/projects                       {name, description?, default_backend, default_model?, default_context_strategy?}
 GET    /api/projects/{id}
 PATCH  /api/projects/{id}                  partial update
-POST   /api/projects/{id}/archive
-POST   /api/projects/{id}/unarchive
+DELETE /api/projects/{id}
+
+GET    /api/directories
+POST   /api/directories                    {name, path, description?}
+PATCH  /api/directories/{id}
+DELETE /api/directories/{id}
+
+GET    /api/mcp-servers
+POST   /api/mcp-servers                    {name, description?, config, enabled?}
+PATCH  /api/mcp-servers/{id}
+DELETE /api/mcp-servers/{id}
+
+GET    /api/agents
+POST   /api/agents                         {name, backend, system_prompt, model?, thinking_level, config?, enabled?}
+PATCH  /api/agents/{id}
+DELETE /api/agents/{id}
+
+GET    /api/skills
+POST   /api/skills                         {name, description?, instructions, enabled?}
+PATCH  /api/skills/{id}
+DELETE /api/skills/{id}
+
+GET    /api/projects/{id}/capabilities/{mcp|agent|skill}
+PUT    /api/projects/{id}/capabilities/{type}/{resource_id}  {enabled, config_override?}
+
+GET    /api/models/{claude_code|codex}     one-hour cached local CLI catalog
+                                                     ?refresh=true bypasses the cache
 
 GET    /api/projects/{id}/directories
-POST   /api/projects/{id}/directories      {path, access_scope}
+POST   /api/projects/{id}/directories      {directory_id, access_scope}
 DELETE /api/projects/{id}/directories/{binding_id}
 
 GET    /api/projects/{id}/mcp-servers
@@ -69,7 +96,7 @@ POST   /api/projects/{id}/cron-jobs/{cron_id}/disable
 DELETE /api/projects/{id}/cron-jobs/{cron_id}
 
 GET    /api/projects/{id}/tasks            ?status=<TaskStatus>  # for the Kanban board
-POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, model?, context_strategy?, media?}
+POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, model?, fallback_models?, thinking_level?, agent_id?, context_strategy?, media?}
                                             -> creates Task(status=queued), immediately calls
                                                process_manager.trigger(task) (fire-and-forget), 201
 
@@ -78,6 +105,8 @@ POST   /api/tasks/{id}/cancel
 POST   /api/tasks/{id}/restart
 POST   /api/tasks/{id}/retry-now           # skip backoff wait, retry immediately
 PATCH  /api/tasks/{id}/model               {model}       # switch model mid-conversation
+PATCH  /api/tasks/{id}/models              {models}      # ordered primary/fallback model chain
+PATCH  /api/tasks/{id}/thinking-level      {thinking_level}
 PATCH  /api/tasks/{id}/context-strategy    {context_strategy}
 POST   /api/tasks/{id}/compress-context    -> creates ContextSnapshot, summarizing all Messages
                                                older than the most recent N turns via the task's
@@ -91,6 +120,8 @@ POST   /api/tasks/{id}/messages            {content_text?, media?}
 GET    /api/tasks/{id}/transcript          -> raw transcript text (full, uncompressed) from disk
 
 GET    /api/tasks/{id}/run-attempts        -> failure/retry log for the "Retry now" UI
+GET    /api/tasks/{id}/invocations         -> backend session ids and per-invocation token usage
+GET    /api/tasks/{id}/events              -> structured tools, diffs, reasoning, logs, and sub-agent activity
 ```
 
 ### WebSocket
@@ -103,6 +134,8 @@ Server -> client JSON events, one per line:
 {"type": "message", "message": {...Message...}}
 {"type": "status", "status": "running"}
 {"type": "run_attempt", "attempt": {...TaskRunAttempt...}}
+{"type": "activity", "event": {...TaskEvent...}}
+{"type": "invocation", "invocation": {...TaskInvocation...}}
 {"type": "token_usage", "used": 12000, "limit": 200000}
 ```
 Client -> server: not used for sending chat (that's the REST POST, so it's
@@ -116,11 +149,14 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
 `trigger(task_id)`:
 1. If a process is already running for this task, just deliver the newest
    user message to its stdin (continued conversation) instead of spawning again.
-2. Else: mark Task `running`, load Project's directory/MCP/tool bindings +
+2. Else: mark Task `running`, resolve explicitly bound global directories and
+   globally enabled MCP/agent/skill resources with project overrides, load
    decrypted secrets, build the backend-specific command, spawn via
    `asyncio.create_subprocess_exec`, and start a reader task that:
-   - parses each backend's streaming output into `Message(sender=agent)` rows,
-     persists them, and broadcasts over the task's WebSocket;
+   - parses each backend's streaming output into messages and structured
+     `TaskEvent` rows, persists them, and broadcasts over the task's WebSocket;
+   - stores the native Claude/Codex session id and token counters on the
+     invocation record;
    - detects a blocking question (see below) and flips status to
      `waiting_on_you`;
    - on clean exit, flips status to `done`;
@@ -236,16 +272,18 @@ Each scheduled firing creates a Task (backend=cron_job.backend,
 initial_prompt=cron_job.prompt, cron_job_id=cron_job.id) and calls
 `process_manager.trigger()`, exactly like the manual creation path.
 
-## Frontend (`frontend/`, React + Vite + TS)
+## Frontend (`frontend/`, Next.js + TypeScript + Tailwind)
 
-Routes: `/` (Projects list) → `/projects/:id` (tabs: Directories, MCP/Tools,
-Artifacts, Cron, Secrets) → `/projects/:id/board` (Kanban by TaskStatus) →
-`/tasks/:id` (chat + model/context controls + token usage + transcript
-toggle + Retry-now banner when applicable).
+Routes: `/` (project command center), `/registry/:kind` (global directories,
+MCP connectors, agents, and skills), `/projects/:id` (project profile and
+capability access), `/projects/:id/board` (task board), and `/tasks/:id`
+(compact chat, activity timeline, multi-agent view, invocation telemetry,
+model/thinking/context controls, and transcript).
 
-API client: `frontend/src/api/client.ts`, one typed function per endpoint
-above, base URL from `import.meta.env.VITE_API_URL` (default
-`http://localhost:8080`). WebSocket client in `frontend/src/api/ws.ts`.
+API client: `frontend/lib/api.ts`, one typed function per endpoint above.
+Runtime deployments set `window.__MUSTER_API_URL__`; build-time deployments
+may set `NEXT_PUBLIC_API_URL`. The task stream is managed in
+`frontend/hooks/use-task-stream.ts`.
 
 State: React Query for server state, no global state library needed.
 

@@ -1,11 +1,6 @@
 #!/bin/sh
-set -e
+set -eu
 
-# Regenerate runtime-config.js from the VITE_API_URL env var docker-compose
-# injects at container start, so client.ts can pick it up without a rebuild.
-# Runs automatically: nginx:alpine executes every executable script under
-# /docker-entrypoint.d/ before starting nginx.
-API_URL="${VITE_API_URL:-http://localhost:8080}"
-cat > /usr/share/nginx/html/runtime-config.js <<EOF
-window.__MUSTER_API_URL__ = "${API_URL}";
-EOF
+node -e 'const fs = require("fs"); const value = process.env.MUSTER_API_URL || process.env.NEXT_PUBLIC_API_URL || process.env.VITE_API_URL || "http://localhost:8080"; fs.writeFileSync("/app/public/runtime-config.js", `window.__MUSTER_API_URL__ = ${JSON.stringify(value)};\n`);'
+
+exec "$@"
