@@ -29,9 +29,10 @@ curl -fsSL https://muster.dev/install.sh | bash
 ```
 
 Installs Postgres + frontend containers, a dedicated backend venv, and a
-launchd (macOS) / systemd `--user` (Linux) supervised backend service. See
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the full install / upgrade /
-uninstall flow and the `musterctl` command reference.
+launchd (macOS) / systemd `--user` (Linux) supervised backend service. See the
+[`Muster CLI guide`](docs/CLI.md) for every `musterctl` command and example,
+or [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for installation and service
+internals.
 
 ### Local dev
 
@@ -59,7 +60,8 @@ export DB_PASSWORD="your-local-password"
 
 Run `make help` for the complete list of development, test, build, log, and
 cleanup commands. To use the containerized frontend on port 3000 instead of
-Vite, run `make up` rather than `make db-up`.
+the Next.js development server on port 5173, run `make up` rather than
+`make db-up`.
 
 ## What Muster Does
 
@@ -95,7 +97,7 @@ Vite, run `make up` rather than `make db-up`.
 | `frontend/` | Next.js App Router + TypeScript + Tailwind command center. Global registries → Project access controls → Kanban task board → compact live execution console, driven by TanStack Query and per-task WebSockets. | [`frontend/README.md`](frontend/README.md) |
 | `cli/` | `musterctl` — the single command covering install, start/stop/restart, status, logs, upgrade, uninstall, database backup/restore, config, and a `doctor` healthcheck, across both launchd and systemd. | [`cli/README.md`](cli/README.md) |
 | `scripts/` | `install.sh` and the launchd/systemd service templates it substitutes at install time — the one-shot path from a bare machine to a running Muster instance. | [`scripts/README.md`](scripts/README.md) |
-| `docs/` | `SPEC.md` (the API/WebSocket contract, process-manager design, and agent-backend adapter behavior that every module above is implemented against) and `OPERATIONS.md` (the full `musterctl` reference and install/upgrade/uninstall flow). | [`docs/SPEC.md`](docs/SPEC.md) · [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
+| `docs/` | User-facing CLI workflows, installation/operations details, and the API/WebSocket/process-manager contract. | [`docs/CLI.md`](docs/CLI.md) · [`docs/OPERATIONS.md`](docs/OPERATIONS.md) · [`docs/SPEC.md`](docs/SPEC.md) |
 
 ## Core Concepts
 
