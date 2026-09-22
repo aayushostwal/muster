@@ -1,8 +1,9 @@
 # Muster — Operations Guide
 
-Covers installing, running, upgrading, and uninstalling a Muster instance,
-plus the full `musterctl` command reference. For the API/WebSocket/process
-manager contract, see [`SPEC.md`](./SPEC.md).
+Covers installing, running, upgrading, and uninstalling a Muster instance.
+For command syntax and usage examples, see the dedicated
+[`Muster CLI guide`](./CLI.md). For the API/WebSocket/process-manager contract,
+see [`SPEC.md`](./SPEC.md).
 
 ---
 
@@ -69,6 +70,8 @@ See the root [`README.md`](../README.md) quick-start section — run Postgres
 ## `musterctl` command reference
 
 Canonical data/config root: `~/.muster` (override with `$MUSTER_HOME`).
+See [`CLI.md`](./CLI.md) for detailed behavior, examples, environment
+overrides, exit status, safety notes, and troubleshooting.
 
 | Command | Description |
 |---|---|
@@ -84,7 +87,7 @@ Canonical data/config root: `~/.muster` (override with `$MUSTER_HOME`).
 | `musterctl db backup [path]` | `pg_dump`; default path `~/.muster/backups/muster-<timestamp>.sql` |
 | `musterctl db restore <path>` | Restore from a `pg_dump` file |
 | `musterctl config` | Print resolved ports / data dir / postgres connection info and source |
-| `musterctl doctor` | PASS/FAIL checks: ports 8080/3000/5432, venv present, directory-binding paths readable, `claude`/`codex` CLI on PATH |
+| `musterctl doctor` | PASS/FAIL checks: configured ports are bound, venv and Compose file are present, and `claude`/`codex` are on `PATH`; reports or skips `config.json` presence |
 | `musterctl open` | Open the frontend URL in the default browser (`open` on macOS, `xdg-open` on Linux) |
 
 `musterctl` detects macOS vs Linux at startup and branches all service-
