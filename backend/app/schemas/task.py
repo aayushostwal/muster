@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,12 +15,23 @@ class TaskCreate(BaseModel):
     initial_prompt: str
     backend: AgentBackend | None = None
     model: str | None = None
+    fallback_models: list[str] = Field(default_factory=list)
+    thinking_level: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    agent_id: uuid.UUID | None = None
     context_strategy: str | None = None
     media: list = Field(default_factory=list)
 
 
 class TaskModelUpdate(BaseModel):
     model: str
+
+
+class TaskModelsUpdate(BaseModel):
+    models: list[str]
+
+
+class TaskThinkingUpdate(BaseModel):
+    thinking_level: Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class TaskContextStrategyUpdate(BaseModel):
@@ -36,6 +48,9 @@ class TaskRead(BaseModel):
     status: TaskStatus
     backend: AgentBackend
     model: str | None
+    fallback_models: list[str]
+    thinking_level: str
+    agent_id: uuid.UUID | None
     context_strategy: str
     session_id: str | None
     created_at: datetime

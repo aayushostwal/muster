@@ -10,7 +10,7 @@ from app.db.models import AccessScope
 
 
 class DirectoryBindingCreate(BaseModel):
-    path: str
+    directory_id: uuid.UUID
     access_scope: AccessScope
 
 
@@ -19,6 +19,8 @@ class DirectoryBindingRead(BaseModel):
 
     id: uuid.UUID
     project_id: uuid.UUID
+    directory_id: uuid.UUID | None
     path: str
+    name: str | None = None
     access_scope: AccessScope
     created_at: datetime

@@ -68,7 +68,6 @@ class Project(Base):
     )
     default_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_context_strategy: Mapped[str] = mapped_column(String(50), default="full")
-    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -91,6 +90,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     secrets: Mapped[list["Secret"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    capability_overrides: Mapped[list["ProjectCapabilityOverride"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class DirectoryBinding(Base):
@@ -99,11 +101,15 @@ class DirectoryBinding(Base):
 
     id: Mapped[uuid.UUID] = _uuid_col()
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    directory_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("directory_resources.id", ondelete="CASCADE"), nullable=True
+    )
     path: Mapped[str] = mapped_column(String(1000), nullable=False)
     access_scope: Mapped[AccessScope] = mapped_column(Enum(AccessScope, name="access_scope"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="directories")
+    directory: Mapped["DirectoryResource | None"] = relationship(back_populates="project_bindings")
 
 
 class McpBinding(Base):
@@ -157,6 +163,11 @@ class Task(Base):
     )
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    fallback_models: Mapped[list] = mapped_column(JSON, default=list)
+    thinking_level: Mapped[str] = mapped_column(String(20), default="medium")
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_profiles.id", ondelete="SET NULL"), nullable=True
+    )
     context_strategy: Mapped[str] = mapped_column(String(50), default="full")
     session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)  # backend's resume handle
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -179,6 +190,138 @@ class Task(Base):
     run_attempts: Mapped[list["TaskRunAttempt"]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="TaskRunAttempt.created_at"
     )
+    invocations: Mapped[list["TaskInvocation"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="TaskInvocation.started_at"
+    )
+    events: Mapped[list["TaskEvent"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="TaskEvent.created_at"
+    )
+
+
+class DirectoryResource(Base):
+    """A globally managed filesystem location that projects may explicitly bind."""
+
+    __tablename__ = "directory_resources"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    path: Mapped[str] = mapped_column(String(1000), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    project_bindings: Mapped[list[DirectoryBinding]] = relationship(
+        back_populates="directory", passive_deletes=True
+    )
+
+
+class GlobalMcpServer(Base):
+    __tablename__ = "global_mcp_servers"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    thinking_level: Mapped[str] = mapped_column(String(20), default="medium")
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Skill(Base):
+    __tablename__ = "skills"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProjectCapabilityOverride(Base):
+    """Project-specific enablement/config for globally available capabilities."""
+
+    __tablename__ = "project_capability_overrides"
+    __table_args__ = (
+        UniqueConstraint("project_id", "resource_type", "resource_id", name="uq_project_capability"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    resource_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config_override: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    project: Mapped[Project] = relationship(back_populates="capability_overrides")
+
+
+class TaskInvocation(Base):
+    __tablename__ = "task_invocations"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    thinking_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="running")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped[Task] = relationship(back_populates="invocations")
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    invocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("task_invocations.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    task: Mapped[Task] = relationship(back_populates="events")
 
 
 class Message(Base):
