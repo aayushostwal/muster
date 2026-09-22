@@ -1,0 +1,34 @@
+version: "3.9"
+
+# Postgres + frontend only. The backend runs natively on the host (see
+# scripts/install.sh, cli/musterctl) so it has direct filesystem access to
+# any local directory without container bind mounts.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=muster
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-muster}
+      - POSTGRES_DB=muster
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muster"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      - VITE_API_URL=${MUSTER_API_URL:-http://localhost:8080}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

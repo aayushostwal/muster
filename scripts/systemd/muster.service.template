@@ -1,0 +1,37 @@
+# Muster backend — Linux systemd USER unit template.
+#
+# Placeholders substituted by scripts/install.sh (sed):
+#   __HOME__         - the installing user's $HOME, e.g. /home/alice
+#   __VENV__         - path to the muster venv, e.g. /home/alice/.muster/venv
+#   __BACKEND_DIR__  - path to the checked-out backend/ dir, e.g.
+#                       /home/alice/.muster/app/backend
+#   __ENV_FILE__     - path to ~/.muster/muster.env (MUSTER_POSTGRES_* vars,
+#                       same values alembic used and the postgres container
+#                       was started with — see EnvironmentFile= below)
+#
+# Installed to: ~/.config/systemd/user/muster.service
+# Enabled with: systemctl --user enable --now muster.service
+# Logs:         journalctl --user -u muster -f (no explicit log path needed)
+#
+# "Pragmatic simplification" (see docs/SPEC.md CLI/install contract, and
+# docs/OPERATIONS.md): rather than a cross-compiled single binary, the
+# "native service" here is `uvicorn` inside a dedicated venv, supervised by
+# a systemd --user unit. Restart=on-failure + WantedBy=default.target give
+# us auto-restart and start-on-login parity with a compiled-binary install.
+
+[Unit]
+Description=Muster backend (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__BACKEND_DIR__
+Environment=HOME=__HOME__
+Environment=PATH=__VENV__/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=__ENV_FILE__
+ExecStart=__VENV__/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

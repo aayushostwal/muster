@@ -1,0 +1,210 @@
+"""Task + Message endpoints (see docs/SPEC.md #rest-api).
+
+Mutating endpoints that kick off/continue agent work call into
+`app.services.process_manager.process_manager`, a module owned by another
+agent and not yet implemented at the time this file was written (see
+docs/SPEC.md #integration-seams for the exact signatures relied on here).
+"""
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import ContextSnapshot, Message, MessageSender, Project, Task, TaskRunAttempt, TaskStatus
+from app.db.session import get_db
+from app.schemas.context_snapshot import ContextSnapshotRead
+from app.schemas.message import MessageCreate, MessageRead
+from app.schemas.run_attempt import TaskRunAttemptRead
+from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelUpdate, TaskRead
+from app.services.process_manager import process_manager
+
+router = APIRouter(tags=["tasks"])
+
+
+async def _get_project_or_404(db: AsyncSession, project_id: uuid.UUID) -> Project:
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+async def _get_task_or_404(db: AsyncSession, task_id: uuid.UUID) -> Task:
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.get("/projects/{project_id}/tasks")
+async def list_tasks(
+    project_id: uuid.UUID,
+    status: TaskStatus | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_project_or_404(db, project_id)
+    stmt = select(Task).where(Task.project_id == project_id)
+    if status is not None:
+        stmt = stmt.where(Task.status == status)
+    result = await db.execute(stmt.order_by(Task.created_at))
+    tasks = result.scalars().all()
+    return {"items": [TaskRead.model_validate(t) for t in tasks]}
+
+
+@router.post("/projects/{project_id}/tasks", status_code=201, response_model=TaskRead)
+async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession = Depends(get_db)):
+    project = await _get_project_or_404(db, project_id)
+    task = Task(
+        project_id=project_id,
+        title=body.title,
+        initial_prompt=body.initial_prompt,
+        status=TaskStatus.queued,
+        backend=body.backend or project.default_backend,
+        model=body.model or project.default_model,
+        context_strategy=body.context_strategy or project.default_context_strategy,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+    await process_manager.trigger(task.id)
+    return task
+
+
+@router.get("/tasks/{task_id}", response_model=TaskRead)
+async def get_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    return await _get_task_or_404(db, task_id)
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskRead)
+async def cancel_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await _get_task_or_404(db, task_id)
+    await process_manager.cancel(task_id)
+    await db.refresh(task)
+    return task
+
+
+@router.post("/tasks/{task_id}/restart", response_model=TaskRead)
+async def restart_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await _get_task_or_404(db, task_id)
+    task.status = TaskStatus.queued
+    task.session_id = None
+    task.started_at = None
+    task.completed_at = None
+    await db.commit()
+    await db.refresh(task)
+    await process_manager.trigger(task.id)
+    return task
+
+
+@router.post("/tasks/{task_id}/retry-now", response_model=TaskRead)
+async def retry_now_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await _get_task_or_404(db, task_id)
+    await process_manager.retry_now(task_id)
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/model", response_model=TaskRead)
+async def update_task_model(
+    task_id: uuid.UUID, body: TaskModelUpdate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    task.model = body.model
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/context-strategy", response_model=TaskRead)
+async def update_task_context_strategy(
+    task_id: uuid.UUID, body: TaskContextStrategyUpdate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    task.context_strategy = body.context_strategy
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.post("/tasks/{task_id}/compress-context", response_model=ContextSnapshotRead)
+async def compress_task_context(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await _get_task_or_404(db, task_id)
+    from app.services.context_compression import compress
+
+    await compress(task_id)
+    result = await db.execute(
+        select(ContextSnapshot)
+        .where(ContextSnapshot.task_id == task_id)
+        .order_by(ContextSnapshot.created_at.desc())
+        .limit(1)
+    )
+    snapshot = result.scalar_one_or_none()
+    if snapshot is None:
+        raise HTTPException(status_code=500, detail="Context compression did not produce a snapshot")
+    return snapshot
+
+
+@router.get("/tasks/{task_id}/messages")
+async def list_messages(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await _get_task_or_404(db, task_id)
+    result = await db.execute(
+        select(Message).where(Message.task_id == task_id).order_by(Message.created_at)
+    )
+    messages = result.scalars().all()
+    return {"items": [MessageRead.model_validate(m) for m in messages]}
+
+
+@router.post("/tasks/{task_id}/messages", status_code=201, response_model=MessageRead)
+async def create_message(
+    task_id: uuid.UUID, body: MessageCreate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    message = Message(
+        task_id=task_id,
+        sender=MessageSender.user,
+        content_text=body.content_text,
+        media=body.media,
+    )
+    db.add(message)
+    # A new user message always resumes a waiting/done/failed task.
+    if task.status in (TaskStatus.waiting_on_you, TaskStatus.done, TaskStatus.failed):
+        task.status = TaskStatus.queued
+    await db.commit()
+    await db.refresh(message)
+    await process_manager.trigger(task_id)
+    return message
+
+
+@router.get("/tasks/{task_id}/transcript")
+async def get_transcript(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await _get_task_or_404(db, task_id)
+    result = await db.execute(
+        select(ContextSnapshot)
+        .where(ContextSnapshot.task_id == task_id)
+        .order_by(ContextSnapshot.created_at.desc())
+        .limit(1)
+    )
+    snapshot = result.scalar_one_or_none()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="No transcript available for this task")
+    path = snapshot.raw_transcript_path
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail=f"Transcript file not found: {exc}") from exc
+    return {"task_id": str(task.id), "transcript": text}
+
+
+@router.get("/tasks/{task_id}/run-attempts")
+async def list_run_attempts(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await _get_task_or_404(db, task_id)
+    result = await db.execute(
+        select(TaskRunAttempt)
+        .where(TaskRunAttempt.task_id == task_id)
+        .order_by(TaskRunAttempt.created_at)
+    )
+    attempts = result.scalars().all()
+    return {"items": [TaskRunAttemptRead.model_validate(a) for a in attempts]}

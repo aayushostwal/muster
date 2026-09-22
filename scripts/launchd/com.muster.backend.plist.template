@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Muster backend — macOS launchd user agent template.
+
+  Placeholders substituted by scripts/install.sh (sed):
+    __HOME__         - the installing user's $HOME, e.g. /Users/alice
+    __VENV__         - path to the muster venv, e.g. /Users/alice/.muster/venv
+    __BACKEND_DIR__  - path to the checked-out backend/ dir, e.g.
+                        /Users/alice/.muster/app/backend
+    __PG_HOST__, __PG_PORT__, __PG_USER__, __PG_PASSWORD__, __PG_DB__
+                     - Postgres connection info, matching ~/.muster/muster.env
+                       and the postgres container's own credentials so the
+                       backend (via app/config.py's Settings, env_prefix
+                       "MUSTER_") connects with the same values alembic used.
+
+  Installed to: ~/Library/LaunchAgents/com.muster.backend.plist
+  Loaded with:  launchctl load -w ~/Library/LaunchAgents/com.muster.backend.plist
+  Logs:         ~/Library/Logs/muster/backend.log (stdout+stderr combined)
+
+  "Pragmatic simplification" (see docs/SPEC.md CLI/install contract, and
+  docs/OPERATIONS.md): the PRD originally called for a single cross-compiled
+  binary supervised by the OS service manager. Muster's backend is Python/
+  FastAPI, so instead we point launchd at `uvicorn` running inside a
+  dedicated venv. KeepAlive + RunAtLoad give us the same "always running,
+  restarts on crash, starts on login" behavior a compiled binary would get.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.muster.backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__VENV__/bin/uvicorn</string>
+    <string>app.main:app</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
+    <string>--port</string>
+    <string>8080</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__BACKEND_DIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>__HOME__</string>
+    <key>PATH</key>
+    <string>__VENV__/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>MUSTER_POSTGRES_HOST</key>
+    <string>__PG_HOST__</string>
+    <key>MUSTER_POSTGRES_PORT</key>
+    <string>__PG_PORT__</string>
+    <key>MUSTER_POSTGRES_USER</key>
+    <string>__PG_USER__</string>
+    <key>MUSTER_POSTGRES_PASSWORD</key>
+    <string>__PG_PASSWORD__</string>
+    <key>MUSTER_POSTGRES_DB</key>
+    <string>__PG_DB__</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/muster/backend.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/muster/backend.log</string>
+</dict>
+</plist>

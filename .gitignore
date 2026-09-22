@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +217,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Muster-specific ---
+
+# Python (project-specific, on top of the generic patterns above)
+backend/.venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# Local data / secrets
+.envrc.local
+~.muster/
+
+# OS
+.DS_Store

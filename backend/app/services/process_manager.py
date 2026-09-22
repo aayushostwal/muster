@@ -1,0 +1,450 @@
+"""Process manager: spawns/streams/retries backend CLI subprocesses.
+
+Single in-process asyncio-based singleton holding at most one live
+subprocess per Task (see docs/SPEC.md "Process manager" and
+"Integration seams").
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.routes.ws import broadcast
+from app.config import settings
+from app.core.security import decrypt_secret
+from app.db.models import (
+    AgentBackend,
+    FailureClass,
+    Message,
+    MessageSender,
+    Project,
+    Task,
+    TaskRunAttempt,
+    TaskStatus,
+)
+from app.db.session import SessionLocal
+from app.services import retry
+from app.services.agent_backends.base import (
+    AdapterBindings,
+    AgentBackendAdapter,
+    AgentText,
+    BlockingQuestion,
+    Done,
+    ErrorEvent,
+    ParsedEvent,
+    SessionId,
+)
+from app.services.agent_backends.claude_code import ClaudeCodeAdapter
+from app.services.agent_backends.codex import CodexAdapter
+
+logger = logging.getLogger(__name__)
+
+_ADAPTERS: dict[AgentBackend, AgentBackendAdapter] = {
+    AgentBackend.claude_code: ClaudeCodeAdapter(),
+    AgentBackend.codex: CodexAdapter(),
+}
+
+_STDERR_TAIL_LIMIT = 4000
+_FORCE_KILL_GRACE = 5.0
+
+
+@dataclass
+class RunningProcess:
+    process: asyncio.subprocess.Process
+    reader_task: asyncio.Task | None = None
+    stderr_task: asyncio.Task | None = None
+    stderr_buf: bytearray = field(default_factory=bytearray)
+    blocking_question_hit: bool = False
+    cancel_requested: bool = False
+
+
+class ProcessManager:
+    """Owns at most one live subprocess per Task."""
+
+    def __init__(self) -> None:
+        self._running: dict[uuid.UUID, RunningProcess] = {}
+        self._pending_retries: dict[uuid.UUID, asyncio.Task] = {}
+        self._locks: dict[uuid.UUID, asyncio.Lock] = {}
+
+    def _lock_for(self, task_id: uuid.UUID) -> asyncio.Lock:
+        lock = self._locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[task_id] = lock
+        return lock
+
+    # -- public API (see docs/SPEC.md "Integration seams") ------------------
+
+    async def trigger(self, task_id: uuid.UUID) -> None:
+        async with self._lock_for(task_id):
+            running = self._running.get(task_id)
+            if running is not None and running.process.returncode is None:
+                await self._deliver_to_running(task_id, running)
+                return
+            await self._spawn(task_id)
+
+    async def cancel(self, task_id: uuid.UUID) -> None:
+        pending = self._pending_retries.pop(task_id, None)
+        if pending is not None:
+            pending.cancel()
+
+        running = self._running.get(task_id)
+        if running is not None:
+            # Mark cancellation intent; _on_process_exit (driven by the
+            # stdout reader's natural EOF once the process dies) reads this
+            # flag and finalizes the Task as `cancelled` instead of running
+            # its normal done/failed/retry classification.
+            running.cancel_requested = True
+            if running.process.returncode is None:
+                try:
+                    running.process.terminate()
+                except ProcessLookupError:
+                    pass
+                asyncio.create_task(self._force_kill_later(running.process))
+            return
+
+        # No live process (task already finished, or is waiting_on_you /
+        # between retries): finalize directly.
+        await self._set_status(task_id, TaskStatus.cancelled, completed=True)
+
+    async def retry_now(self, task_id: uuid.UUID) -> None:
+        pending = self._pending_retries.pop(task_id, None)
+        if pending is not None:
+            pending.cancel()
+        await self.trigger(task_id)
+
+    @staticmethod
+    async def _force_kill_later(process: asyncio.subprocess.Process) -> None:
+        try:
+            await asyncio.wait_for(process.wait(), timeout=_FORCE_KILL_GRACE)
+        except asyncio.TimeoutError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+
+    # -- spawn / continue -----------------------------------------------
+
+    async def _deliver_to_running(self, task_id: uuid.UUID, running: RunningProcess) -> None:
+        """Best-effort: forward the newest user message to a live process's stdin.
+
+        Both bundled backends are documented (docs/SPEC.md) as single-shot
+        per invocation (`claude -p` / `codex exec` exit after one turn), so
+        in practice trigger() rarely observes a still-running process for the
+        same task. Per SPEC.md step 1 we still attempt stdin delivery first;
+        if the process isn't reading stdin this is a harmless no-op -- the
+        message stays durably in Postgres and is delivered via --resume the
+        next time trigger() spawns a fresh invocation for this task.
+        """
+        prompt = await self._latest_user_prompt(task_id)
+        if prompt is None or running.process.stdin is None:
+            return
+        try:
+            running.process.stdin.write((prompt + "\n").encode("utf-8"))
+            await running.process.stdin.drain()
+        except (ConnectionResetError, BrokenPipeError, RuntimeError):
+            logger.debug("stdin delivery failed for task %s; will resume next trigger", task_id)
+
+    async def _spawn(self, task_id: uuid.UUID) -> None:
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                logger.warning("trigger() called for unknown task %s", task_id)
+                return
+            project = await self._load_project(db, task.project_id)
+            if project is None:
+                logger.warning("task %s references missing project %s", task_id, task.project_id)
+                return
+
+            adapter = _ADAPTERS[task.backend]
+            bindings = self._bindings_for(project)
+            secrets = {s.key_name: decrypt_secret(s.encrypted_value) for s in project.secrets}
+
+            if task.session_id:
+                prompt = await self._latest_user_prompt_db(db, task_id) or task.initial_prompt
+                cmd = adapter.resume_command(task, project, bindings, secrets, task.session_id, prompt)
+                await self._append_transcript(task_id, "user", prompt)
+            else:
+                cmd = adapter.build_command(task, project, bindings, secrets)
+                await self._append_transcript(task_id, "user", task.initial_prompt)
+
+            task.status = TaskStatus.running
+            if task.started_at is None:
+                task.started_at = datetime.now(timezone.utc)
+            await db.commit()
+
+        await broadcast(task_id, {"type": "status", "status": TaskStatus.running.value})
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+        )
+        # The prompt is always passed via -p / the resumed invocation's
+        # argv, never stdin, and both CLIs are single-shot per invocation
+        # (see SPEC.md). An open-but-silent stdin pipe makes `claude` stall
+        # for several seconds waiting for input that will never arrive
+        # (observed: "Warning: no stdin data received in 3s..."), so close
+        # it immediately. `_deliver_to_running`'s best-effort stdin write
+        # becomes a no-op once this runs, which matches its own docstring.
+        if process.stdin is not None:
+            process.stdin.close()
+
+        running = RunningProcess(process=process)
+        running.reader_task = asyncio.create_task(self._read_stdout(task_id, process, adapter, running))
+        running.stderr_task = asyncio.create_task(self._read_stderr(process, running))
+        self._running[task_id] = running
+
+    async def _load_project(self, db: AsyncSession, project_id: uuid.UUID) -> Project | None:
+        result = await db.execute(
+            select(Project)
+            .options(
+                selectinload(Project.directories),
+                selectinload(Project.mcp_servers),
+                selectinload(Project.tools),
+                selectinload(Project.secrets),
+            )
+            .where(Project.id == project_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _bindings_for(project: Project) -> AdapterBindings:
+        return AdapterBindings(
+            directories=[d.path for d in project.directories],
+            mcp_servers={m.name: m.config for m in project.mcp_servers},
+            tool_names=[t.name for t in project.tools],
+        )
+
+    async def _latest_user_prompt(self, task_id: uuid.UUID) -> str | None:
+        async with SessionLocal() as db:
+            return await self._latest_user_prompt_db(db, task_id)
+
+    @staticmethod
+    async def _latest_user_prompt_db(db: AsyncSession, task_id: uuid.UUID) -> str | None:
+        result = await db.execute(
+            select(Message)
+            .where(Message.task_id == task_id, Message.sender == MessageSender.user)
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        msg = result.scalar_one_or_none()
+        return msg.content_text if msg else None
+
+    # -- stdout / stderr reading ------------------------------------------
+
+    async def _read_stdout(
+        self,
+        task_id: uuid.UUID,
+        process: asyncio.subprocess.Process,
+        adapter: AgentBackendAdapter,
+        running: RunningProcess,
+    ) -> None:
+        assert process.stdout is not None
+        try:
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace")
+                try:
+                    event = adapter.parse_line(line)
+                except Exception:  # noqa: BLE001 - never let a bad line kill the reader
+                    logger.exception("failed to parse backend output line for task %s", task_id)
+                    continue
+                if event is None:
+                    continue
+                await self._handle_event(task_id, event, running)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("stdout reader crashed for task %s", task_id)
+        finally:
+            await self._on_process_exit(task_id, process, running)
+
+    async def _read_stderr(self, process: asyncio.subprocess.Process, running: RunningProcess) -> None:
+        assert process.stderr is not None
+        try:
+            async for chunk in process.stderr:
+                running.stderr_buf += chunk
+                if len(running.stderr_buf) > _STDERR_TAIL_LIMIT:
+                    del running.stderr_buf[: len(running.stderr_buf) - _STDERR_TAIL_LIMIT]
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("stderr reader crashed")
+
+    async def _handle_event(self, task_id: uuid.UUID, event: ParsedEvent, running: RunningProcess) -> None:
+        if isinstance(event, AgentText):
+            await self._persist_and_broadcast_message(task_id, MessageSender.agent, event.text)
+        elif isinstance(event, BlockingQuestion):
+            running.blocking_question_hit = True
+            await self._persist_and_broadcast_message(
+                task_id, MessageSender.agent, event.text, is_blocking_question=True
+            )
+            await self._set_status(task_id, TaskStatus.waiting_on_you)
+        elif isinstance(event, SessionId):
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is not None and task.session_id != event.session_id:
+                    task.session_id = event.session_id
+                    await db.commit()
+        elif isinstance(event, Done):
+            pass  # exit-code handling in _on_process_exit is authoritative
+        elif isinstance(event, ErrorEvent):
+            await self._persist_and_broadcast_message(task_id, MessageSender.system, event.message)
+
+    async def _persist_and_broadcast_message(
+        self,
+        task_id: uuid.UUID,
+        sender: MessageSender,
+        text: str,
+        is_blocking_question: bool = False,
+    ) -> None:
+        async with SessionLocal() as db:
+            message = Message(
+                task_id=task_id,
+                sender=sender,
+                content_text=text,
+                is_blocking_question=is_blocking_question,
+            )
+            db.add(message)
+            await db.commit()
+            await db.refresh(message)
+        await self._append_transcript(task_id, sender.value, text)
+        await broadcast(task_id, {"type": "message", "message": _serialize_message(message)})
+
+    # -- exit / retry handling ---------------------------------------------
+
+    async def _on_process_exit(
+        self, task_id: uuid.UUID, process: asyncio.subprocess.Process, running: RunningProcess
+    ) -> None:
+        exit_code = await process.wait()
+        if running.stderr_task is not None:
+            running.stderr_task.cancel()
+        self._running.pop(task_id, None)
+
+        if running.cancel_requested:
+            await self._set_status(task_id, TaskStatus.cancelled, completed=True)
+            return
+
+        if running.blocking_question_hit:
+            # Status is already waiting_on_you; the user's reply resumes it.
+            return
+
+        if exit_code == 0:
+            await self._set_status(task_id, TaskStatus.done, completed=True)
+            return
+
+        stderr_tail = bytes(running.stderr_buf).decode("utf-8", errors="replace")
+        failure_class = retry.classify(exit_code, stderr_tail)
+
+        async with SessionLocal() as db:
+            existing = await db.execute(
+                select(TaskRunAttempt).where(TaskRunAttempt.task_id == task_id)
+            )
+            attempt_number = len(existing.scalars().all()) + 1
+
+        can_retry = (
+            failure_class == FailureClass.transient and attempt_number <= settings.retry_max_attempts
+        )
+        backoff_seconds = retry.compute_backoff(attempt_number - 1) if can_retry else None
+        error_message = stderr_tail[-_STDERR_TAIL_LIMIT:] or f"exited with code {exit_code}"
+
+        async with SessionLocal() as db:
+            run_attempt = TaskRunAttempt(
+                task_id=task_id,
+                attempt_number=attempt_number,
+                failure_class=failure_class,
+                error_message=error_message,
+                backoff_seconds=backoff_seconds,
+            )
+            db.add(run_attempt)
+            sys_message = Message(
+                task_id=task_id,
+                sender=MessageSender.system,
+                content_text=f"Attempt {attempt_number} failed ({failure_class.value}): {error_message}",
+            )
+            db.add(sys_message)
+            await db.commit()
+            await db.refresh(run_attempt)
+            await db.refresh(sys_message)
+
+        await self._append_transcript(task_id, "system", sys_message.content_text or "")
+        await broadcast(task_id, {"type": "run_attempt", "attempt": _serialize_run_attempt(run_attempt)})
+        await broadcast(task_id, {"type": "message", "message": _serialize_message(sys_message)})
+
+        if can_retry and backoff_seconds is not None:
+            await self._set_status(task_id, TaskStatus.running)
+            pending = asyncio.create_task(self._delayed_retry(task_id, backoff_seconds))
+            self._pending_retries[task_id] = pending
+        else:
+            await self._set_status(task_id, TaskStatus.failed, completed=True)
+
+    async def _delayed_retry(self, task_id: uuid.UUID, backoff_seconds: int) -> None:
+        try:
+            await asyncio.sleep(backoff_seconds)
+        except asyncio.CancelledError:
+            return
+        self._pending_retries.pop(task_id, None)
+        await self.trigger(task_id)
+
+    # -- shared helpers -------------------------------------------------
+
+    async def _set_status(self, task_id: uuid.UUID, status: TaskStatus, completed: bool = False) -> None:
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                return
+            task.status = status
+            if completed:
+                task.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+        await broadcast(task_id, {"type": "status", "status": status.value})
+
+    async def _append_transcript(self, task_id: uuid.UUID, sender: str, text: str) -> None:
+        settings.ensure_dirs()
+        path = settings.transcripts_dir / f"{task_id}.jsonl"
+        line = json.dumps(
+            {"sender": sender, "text": text, "ts": datetime.now(timezone.utc).isoformat()}
+        )
+        await asyncio.to_thread(_append_line, path, line)
+
+
+def _append_line(path: Path, line: str) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def _serialize_message(message: Message) -> dict:
+    return {
+        "id": str(message.id),
+        "task_id": str(message.task_id),
+        "sender": message.sender.value,
+        "content_text": message.content_text,
+        "media": message.media,
+        "is_blocking_question": message.is_blocking_question,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+    }
+
+
+def _serialize_run_attempt(attempt: TaskRunAttempt) -> dict:
+    return {
+        "id": str(attempt.id),
+        "task_id": str(attempt.task_id),
+        "attempt_number": attempt.attempt_number,
+        "failure_class": attempt.failure_class.value if attempt.failure_class else None,
+        "error_message": attempt.error_message,
+        "backoff_seconds": attempt.backoff_seconds,
+        "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
+    }
+
+
+process_manager = ProcessManager()
