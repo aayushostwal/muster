@@ -12,6 +12,12 @@ FRONTEND_DIR := frontend
 VENV := $(BACKEND_DIR)/.venv
 PYTHON := $(abspath $(VENV))/bin/python
 PIP := $(abspath $(VENV))/bin/pip
+DB_PASSWORD ?= $(or $(MUSTER_POSTGRES_PASSWORD),$(POSTGRES_PASSWORD),muster)
+FRONTEND_DEV_PORT ?= 5173
+
+# Keep Docker Compose and the native backend on the same database password.
+export POSTGRES_PASSWORD := $(DB_PASSWORD)
+export MUSTER_POSTGRES_PASSWORD := $(DB_PASSWORD)
 
 .PHONY: help install backend-install frontend-install \
         up down db-up db-down logs \
@@ -32,16 +38,16 @@ backend-install: ## Create backend/.venv and install requirements.txt into it
 	$(PIP) install --upgrade pip
 	$(PIP) install -r $(BACKEND_DIR)/requirements.txt
 
-frontend-install: ## npm install the frontend
-	cd $(FRONTEND_DIR) && npm install
+frontend-install: ## Install pinned frontend dependencies with npm ci
+	cd $(FRONTEND_DIR) && npm ci
 
 ## --- Docker (Postgres + frontend) --------------------------------------
 
 up: ## Start Postgres + frontend containers
-	docker compose up -d postgres frontend
+	docker compose up -d --wait postgres frontend
 
 db-up: ## Start only Postgres
-	docker compose up -d postgres
+	docker compose up -d --wait postgres
 
 down: ## Stop and remove all containers
 	docker compose down
@@ -58,9 +64,10 @@ migrate: ## Run Alembic migrations against the running Postgres
 	cd $(BACKEND_DIR) && $(PYTHON) -m alembic upgrade head
 
 migration: ## Generate a new empty Alembic revision (make migration name=add_x)
+	@test -n "$(name)" || { echo "Usage: make migration name=add_x"; exit 1; }
 	cd $(BACKEND_DIR) && $(PYTHON) -m alembic revision -m "$(name)"
 
-dev-backend: ## Run the backend with hot reload (needs `make up` + `make migrate` first)
+dev-backend: ## Run the backend with hot reload (needs `make db-up` + `make migrate` first)
 	cd $(BACKEND_DIR) && $(PYTHON) -m uvicorn app.main:app --reload --port 8080
 
 test-backend: ## Run backend tests (in-memory SQLite, no Postgres needed)
@@ -69,7 +76,7 @@ test-backend: ## Run backend tests (in-memory SQLite, no Postgres needed)
 ## --- Frontend --------------------------------------------------------
 
 dev-frontend: ## Run the frontend dev server (http://localhost:5173)
-	cd $(FRONTEND_DIR) && npm run dev
+	cd $(FRONTEND_DIR) && npm run dev -- --port $(FRONTEND_DEV_PORT)
 
 typecheck-frontend: ## Type-check the frontend without emitting
 	cd $(FRONTEND_DIR) && npx tsc --noEmit

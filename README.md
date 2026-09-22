@@ -35,20 +35,30 @@ uninstall flow and the `musterctl` command reference.
 ### Local dev
 
 ```bash
-# 1. Postgres + frontend in Docker
-docker compose up -d postgres frontend
+# Install the pinned backend and frontend dependencies
+make install
 
-# 2. Backend, run directly (hot reload)
-cd backend
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload --port 8080
+# Start Postgres and apply migrations
+make db-up
+make migrate
 
-# 3. Frontend dev server (separate terminal)
-cd frontend
-npm install
-npm run dev
+# Run these in separate terminals
+make dev-backend
+make dev-frontend  # http://localhost:5173
 ```
+
+The Makefile uses `muster` as the local database password by default and
+passes the same value to Docker Compose and the native backend. To use a
+different password, export it once for the shell session before running the
+commands above:
+
+```bash
+export DB_PASSWORD="your-local-password"
+```
+
+Run `make help` for the complete list of development, test, build, log, and
+cleanup commands. To use the containerized frontend on port 3000 instead of
+Vite, run `make up` rather than `make db-up`.
 
 ## What Muster Does
 
