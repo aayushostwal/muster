@@ -48,7 +48,24 @@ class ErrorEvent:
     message: str
 
 
-ParsedEvent = Union[AgentText, BlockingQuestion, SessionId, Done, ErrorEvent]
+@dataclass(frozen=True, slots=True)
+class ActivityEvent:
+    """A collapsible execution event such as a tool, diff, log, or sub-agent call."""
+
+    kind: str
+    title: str
+    content: str | None = None
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageEvent:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+
+
+ParsedEvent = Union[AgentText, BlockingQuestion, SessionId, Done, ErrorEvent, ActivityEvent, UsageEvent]
 
 
 class AgentBackendAdapter(Protocol):
@@ -78,7 +95,7 @@ class AgentBackendAdapter(Protocol):
         """Build the argv to continue a task, given its backend session id."""
         ...
 
-    def parse_line(self, raw: str) -> ParsedEvent | None:
+    def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         """Parse one line of the backend's stdout stream into a ParsedEvent."""
         ...
 
@@ -94,3 +111,6 @@ class AdapterBindings:
     directories: list[str]
     mcp_servers: dict[str, dict]  # name -> {command, args, env}
     tool_names: list[str]
+    agent_profiles: dict[str, dict]
+    skills: dict[str, str]
+    selected_agent_prompt: str | None = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,11 +24,18 @@ from app.config import settings
 from app.core.security import decrypt_secret
 from app.db.models import (
     AgentBackend,
+    AgentProfile,
+    DirectoryBinding,
+    GlobalMcpServer,
     FailureClass,
     Message,
     MessageSender,
     Project,
+    ProjectCapabilityOverride,
+    Skill,
     Task,
+    TaskEvent,
+    TaskInvocation,
     TaskRunAttempt,
     TaskStatus,
 )
@@ -35,6 +43,7 @@ from app.db.session import SessionLocal
 from app.services import retry
 from app.services.agent_backends.base import (
     AdapterBindings,
+    ActivityEvent,
     AgentBackendAdapter,
     AgentText,
     BlockingQuestion,
@@ -42,6 +51,7 @@ from app.services.agent_backends.base import (
     ErrorEvent,
     ParsedEvent,
     SessionId,
+    UsageEvent,
 )
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
 from app.services.agent_backends.codex import CodexAdapter
@@ -60,6 +70,8 @@ _FORCE_KILL_GRACE = 5.0
 @dataclass
 class RunningProcess:
     process: asyncio.subprocess.Process
+    invocation_id: uuid.UUID
+    temp_paths: tuple[Path, ...] = ()
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None
     stderr_buf: bytearray = field(default_factory=bytearray)
@@ -166,7 +178,7 @@ class ProcessManager:
                 return
 
             adapter = _ADAPTERS[task.backend]
-            bindings = self._bindings_for(project)
+            bindings = await self._bindings_for(db, project, task)
             secrets = {s.key_name: decrypt_secret(s.encrypted_value) for s in project.secrets}
 
             if task.session_id:
@@ -180,16 +192,48 @@ class ProcessManager:
             task.status = TaskStatus.running
             if task.started_at is None:
                 task.started_at = datetime.now(timezone.utc)
+            previous = await db.execute(select(TaskInvocation).where(TaskInvocation.task_id == task_id))
+            invocation = TaskInvocation(
+                task_id=task_id,
+                sequence=len(previous.scalars().all()) + 1,
+                backend=task.backend,
+                model=task.model or project.default_model,
+                thinking_level=task.thinking_level,
+                status="running",
+            )
+            db.add(invocation)
             await db.commit()
+            await db.refresh(invocation)
+            invocation_id = invocation.id
 
         await broadcast(task_id, {"type": "status", "status": TaskStatus.running.value})
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE,
+                env={**os.environ, **secrets},
+            )
+        except OSError as exc:
+            _cleanup_temp_paths(_command_temp_paths(cmd))
+            message = f"Unable to start {task.backend.value}: {exc}"
+            async with SessionLocal() as db:
+                failed_invocation = await db.get(TaskInvocation, invocation_id)
+                if failed_invocation is not None:
+                    failed_invocation.status = "failed"
+                    failed_invocation.completed_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    await db.refresh(failed_invocation)
+                    await broadcast(
+                        task_id,
+                        {"type": "invocation", "invocation": _serialize_invocation(failed_invocation)},
+                    )
+            await self._persist_activity(task_id, invocation_id, "log", "Runtime failed to start", message)
+            await self._persist_and_broadcast_message(task_id, MessageSender.system, message)
+            await self._set_status(task_id, TaskStatus.failed, completed=True)
+            return
         # The prompt is always passed via -p / the resumed invocation's
         # argv, never stdin, and both CLIs are single-shot per invocation
         # (see SPEC.md). An open-but-silent stdin pipe makes `claude` stall
@@ -200,16 +244,30 @@ class ProcessManager:
         if process.stdin is not None:
             process.stdin.close()
 
-        running = RunningProcess(process=process)
+        running = RunningProcess(
+            process=process,
+            invocation_id=invocation_id,
+            temp_paths=_command_temp_paths(cmd),
+        )
         running.reader_task = asyncio.create_task(self._read_stdout(task_id, process, adapter, running))
-        running.stderr_task = asyncio.create_task(self._read_stderr(process, running))
+        running.stderr_task = asyncio.create_task(
+            self._read_stderr(task_id, invocation_id, process, running)
+        )
         self._running[task_id] = running
+        await self._persist_activity(
+            task_id,
+            invocation_id,
+            "invocation",
+            f"{task.backend.value} invocation {invocation.sequence} started",
+            metadata={"model": invocation.model, "thinking_level": invocation.thinking_level},
+        )
 
     async def _load_project(self, db: AsyncSession, project_id: uuid.UUID) -> Project | None:
         result = await db.execute(
             select(Project)
             .options(
                 selectinload(Project.directories),
+                selectinload(Project.directories).selectinload(DirectoryBinding.directory),
                 selectinload(Project.mcp_servers),
                 selectinload(Project.tools),
                 selectinload(Project.secrets),
@@ -219,11 +277,65 @@ class ProcessManager:
         return result.scalar_one_or_none()
 
     @staticmethod
-    def _bindings_for(project: Project) -> AdapterBindings:
+    async def _bindings_for(db: AsyncSession, project: Project, task: Task) -> AdapterBindings:
+        overrides = (
+            await db.execute(
+                select(ProjectCapabilityOverride).where(
+                    ProjectCapabilityOverride.project_id == project.id
+                )
+            )
+        ).scalars().all()
+        override_map = {(row.resource_type, row.resource_id): row for row in overrides}
+
+        global_mcp = (await db.execute(select(GlobalMcpServer))).scalars().all()
+        mcp_servers: dict[str, dict] = {
+            row.name: {**row.config, **(override_map.get(("mcp", row.id)).config_override if override_map.get(("mcp", row.id)) else {})}
+            for row in global_mcp
+            if row.enabled and (override_map.get(("mcp", row.id)) is None or override_map[("mcp", row.id)].enabled)
+        }
+        mcp_servers.update({m.name: m.config for m in project.mcp_servers})
+
+        agents = (await db.execute(select(AgentProfile))).scalars().all()
+        agent_profiles = {
+            row.name: {
+                "description": row.description or row.name,
+                "prompt": row.system_prompt,
+                **(row.config or {}),
+            }
+            for row in agents
+            if row.enabled
+            and row.backend == task.backend
+            and (override_map.get(("agent", row.id)) is None or override_map[("agent", row.id)].enabled)
+        }
+        selected = next(
+            (
+                row
+                for row in agents
+                if row.id == task.agent_id
+                and row.enabled
+                and row.backend == task.backend
+                and (
+                    override_map.get(("agent", row.id)) is None
+                    or override_map[("agent", row.id)].enabled
+                )
+            ),
+            None,
+        )
+
+        skill_rows = (await db.execute(select(Skill))).scalars().all()
+        skills = {
+            row.name: row.instructions
+            for row in skill_rows
+            if row.enabled
+            and (override_map.get(("skill", row.id)) is None or override_map[("skill", row.id)].enabled)
+        }
         return AdapterBindings(
-            directories=[d.path for d in project.directories],
-            mcp_servers={m.name: m.config for m in project.mcp_servers},
+            directories=[d.directory.path if d.directory else d.path for d in project.directories],
+            mcp_servers=mcp_servers,
             tool_names=[t.name for t in project.tools],
+            agent_profiles=agent_profiles,
+            skills=skills,
+            selected_agent_prompt=selected.system_prompt if selected else None,
         )
 
     async def _latest_user_prompt(self, task_id: uuid.UUID) -> str | None:
@@ -261,7 +373,9 @@ class ProcessManager:
                     continue
                 if event is None:
                     continue
-                await self._handle_event(task_id, event, running)
+                events = event if isinstance(event, list) else [event]
+                for parsed in events:
+                    await self._handle_event(task_id, parsed, running)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -269,11 +383,22 @@ class ProcessManager:
         finally:
             await self._on_process_exit(task_id, process, running)
 
-    async def _read_stderr(self, process: asyncio.subprocess.Process, running: RunningProcess) -> None:
+    async def _read_stderr(
+        self,
+        task_id: uuid.UUID,
+        invocation_id: uuid.UUID,
+        process: asyncio.subprocess.Process,
+        running: RunningProcess,
+    ) -> None:
         assert process.stderr is not None
         try:
             async for chunk in process.stderr:
                 running.stderr_buf += chunk
+                text = chunk.decode("utf-8", errors="replace").strip()
+                if text:
+                    await self._persist_activity(
+                        task_id, invocation_id, "log", "Runtime log", text[-2000:]
+                    )
                 if len(running.stderr_buf) > _STDERR_TAIL_LIMIT:
                     del running.stderr_buf[: len(running.stderr_buf) - _STDERR_TAIL_LIMIT]
         except asyncio.CancelledError:
@@ -293,13 +418,37 @@ class ProcessManager:
         elif isinstance(event, SessionId):
             async with SessionLocal() as db:
                 task = await db.get(Task, task_id)
+                invocation = await db.get(TaskInvocation, running.invocation_id)
                 if task is not None and task.session_id != event.session_id:
                     task.session_id = event.session_id
-                    await db.commit()
+                if invocation is not None:
+                    invocation.session_id = event.session_id
+                await db.commit()
+                if invocation is not None:
+                    await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
         elif isinstance(event, Done):
             pass  # exit-code handling in _on_process_exit is authoritative
         elif isinstance(event, ErrorEvent):
             await self._persist_and_broadcast_message(task_id, MessageSender.system, event.message)
+        elif isinstance(event, ActivityEvent):
+            await self._persist_activity(
+                task_id,
+                running.invocation_id,
+                event.kind,
+                event.title,
+                event.content,
+                event.metadata,
+            )
+        elif isinstance(event, UsageEvent):
+            async with SessionLocal() as db:
+                invocation = await db.get(TaskInvocation, running.invocation_id)
+                if invocation is not None:
+                    invocation.input_tokens = event.input_tokens
+                    invocation.output_tokens = event.output_tokens
+                    invocation.cached_tokens = event.cached_tokens
+                    await db.commit()
+                    await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
+                    await broadcast(task_id, {"type": "token_usage", "used": event.input_tokens + event.output_tokens, "limit": 0})
 
     async def _persist_and_broadcast_message(
         self,
@@ -329,7 +478,18 @@ class ProcessManager:
         exit_code = await process.wait()
         if running.stderr_task is not None:
             running.stderr_task.cancel()
+        _cleanup_temp_paths(running.temp_paths)
         self._running.pop(task_id, None)
+
+        async with SessionLocal() as db:
+            invocation = await db.get(TaskInvocation, running.invocation_id)
+            if invocation is not None:
+                invocation.status = "cancelled" if running.cancel_requested else "completed" if exit_code == 0 else "failed"
+                invocation.completed_at = datetime.now(timezone.utc)
+                await db.commit()
+                await db.refresh(invocation)
+        if invocation is not None:
+            await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
 
         if running.cancel_requested:
             await self._set_status(task_id, TaskStatus.cancelled, completed=True)
@@ -417,10 +577,49 @@ class ProcessManager:
         )
         await asyncio.to_thread(_append_line, path, line)
 
+    async def _persist_activity(
+        self,
+        task_id: uuid.UUID,
+        invocation_id: uuid.UUID | None,
+        kind: str,
+        title: str,
+        content: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        async with SessionLocal() as db:
+            event = TaskEvent(
+                task_id=task_id,
+                invocation_id=invocation_id,
+                kind=kind,
+                title=title,
+                content=content,
+                event_metadata=metadata or {},
+            )
+            db.add(event)
+            await db.commit()
+            await db.refresh(event)
+        await broadcast(task_id, {"type": "activity", "event": _serialize_event(event)})
+
 
 def _append_line(path: Path, line: str) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def _command_temp_paths(command: list[str]) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for index, value in enumerate(command[:-1]):
+        if value == "--mcp-config":
+            paths.append(Path(command[index + 1]))
+    return tuple(paths)
+
+
+def _cleanup_temp_paths(paths: tuple[Path, ...]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("could not remove temporary runtime config %s", path)
 
 
 def _serialize_message(message: Message) -> dict:
@@ -444,6 +643,37 @@ def _serialize_run_attempt(attempt: TaskRunAttempt) -> dict:
         "error_message": attempt.error_message,
         "backoff_seconds": attempt.backoff_seconds,
         "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
+    }
+
+
+def _serialize_invocation(invocation: TaskInvocation) -> dict:
+    return {
+        "id": str(invocation.id),
+        "task_id": str(invocation.task_id),
+        "sequence": invocation.sequence,
+        "backend": invocation.backend.value,
+        "session_id": invocation.session_id,
+        "model": invocation.model,
+        "thinking_level": invocation.thinking_level,
+        "status": invocation.status,
+        "input_tokens": invocation.input_tokens,
+        "output_tokens": invocation.output_tokens,
+        "cached_tokens": invocation.cached_tokens,
+        "started_at": invocation.started_at.isoformat() if invocation.started_at else None,
+        "completed_at": invocation.completed_at.isoformat() if invocation.completed_at else None,
+    }
+
+
+def _serialize_event(event: TaskEvent) -> dict:
+    return {
+        "id": str(event.id),
+        "task_id": str(event.task_id),
+        "invocation_id": str(event.invocation_id) if event.invocation_id else None,
+        "kind": event.kind,
+        "title": event.title,
+        "content": event.content,
+        "event_metadata": event.event_metadata,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 
