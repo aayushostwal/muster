@@ -13,12 +13,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ContextSnapshot, Message, MessageSender, Project, Task, TaskRunAttempt, TaskStatus
+from app.db.models import AgentProfile, ContextSnapshot, Message, MessageSender, Project, ProjectCapabilityOverride, Task, TaskEvent, TaskInvocation, TaskRunAttempt, TaskStatus
 from app.db.session import get_db
 from app.schemas.context_snapshot import ContextSnapshotRead
+from app.schemas.activity import TaskEventRead, TaskInvocationRead
 from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.run_attempt import TaskRunAttemptRead
-from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelUpdate, TaskRead
+from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskThinkingUpdate
 from app.services.process_manager import process_manager
 
 router = APIRouter(tags=["tasks"])
@@ -56,13 +57,33 @@ async def list_tasks(
 @router.post("/projects/{project_id}/tasks", status_code=201, response_model=TaskRead)
 async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession = Depends(get_db)):
     project = await _get_project_or_404(db, project_id)
+    agent = await db.get(AgentProfile, body.agent_id) if body.agent_id else None
+    if body.agent_id and agent is None:
+        raise HTTPException(status_code=404, detail="Agent profile not found")
+    if agent is not None:
+        override = (
+            await db.execute(
+                select(ProjectCapabilityOverride).where(
+                    ProjectCapabilityOverride.project_id == project_id,
+                    ProjectCapabilityOverride.resource_type == "agent",
+                    ProjectCapabilityOverride.resource_id == agent.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not agent.enabled or (override is not None and not override.enabled):
+            raise HTTPException(status_code=422, detail="Agent profile is disabled for this project")
+        if body.backend is not None and body.backend != agent.backend:
+            raise HTTPException(status_code=422, detail="Agent profile does not support this runtime")
     task = Task(
         project_id=project_id,
         title=body.title,
         initial_prompt=body.initial_prompt,
         status=TaskStatus.queued,
-        backend=body.backend or project.default_backend,
-        model=body.model or project.default_model,
+        backend=body.backend or (agent.backend if agent else project.default_backend),
+        model=body.model or (agent.model if agent else project.default_model),
+        fallback_models=body.fallback_models,
+        thinking_level=body.thinking_level or (agent.thinking_level if agent else "medium"),
+        agent_id=body.agent_id,
         context_strategy=body.context_strategy or project.default_context_strategy,
     )
     db.add(task)
@@ -112,6 +133,33 @@ async def update_task_model(
 ):
     task = await _get_task_or_404(db, task_id)
     task.model = body.model
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/models", response_model=TaskRead)
+async def update_task_models(
+    task_id: uuid.UUID, body: TaskModelsUpdate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    if not body.models:
+        raise HTTPException(status_code=422, detail="Select at least one model")
+    task.model = body.models[0]
+    task.fallback_models = body.models[1:]
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/thinking-level", response_model=TaskRead)
+async def update_task_thinking(
+    task_id: uuid.UUID, body: TaskThinkingUpdate, db: AsyncSession = Depends(get_db)
+):
+    if body.thinking_level not in {"low", "medium", "high", "xhigh", "max"}:
+        raise HTTPException(status_code=422, detail="Unsupported thinking level")
+    task = await _get_task_or_404(db, task_id)
+    task.thinking_level = body.thinking_level
     await db.commit()
     await db.refresh(task)
     return task
@@ -208,3 +256,23 @@ async def list_run_attempts(task_id: uuid.UUID, db: AsyncSession = Depends(get_d
     )
     attempts = result.scalars().all()
     return {"items": [TaskRunAttemptRead.model_validate(a) for a in attempts]}
+
+
+@router.get("/tasks/{task_id}/invocations")
+async def list_invocations(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await _get_task_or_404(db, task_id)
+    result = await db.execute(
+        select(TaskInvocation)
+        .where(TaskInvocation.task_id == task_id)
+        .order_by(TaskInvocation.started_at)
+    )
+    return {"items": [TaskInvocationRead.model_validate(row) for row in result.scalars().all()]}
+
+
+@router.get("/tasks/{task_id}/events")
+async def list_task_events(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await _get_task_or_404(db, task_id)
+    result = await db.execute(
+        select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.created_at)
+    )
+    return {"items": [TaskEventRead.model_validate(row) for row in result.scalars().all()]}

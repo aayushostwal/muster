@@ -34,6 +34,5 @@ class ProjectRead(BaseModel):
     default_backend: AgentBackend
     default_model: str | None
     default_context_strategy: str
-    archived: bool
     created_at: datetime
     updated_at: datetime

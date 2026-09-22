@@ -10,6 +10,7 @@ from app.api.routes import (
     directories,
     mcp_servers,
     projects,
+    registry,
     secrets as secrets_routes,
     tasks,
     tools,
@@ -37,6 +38,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router, prefix="/api")
+app.include_router(registry.router, prefix="/api")
 app.include_router(directories.router, prefix="/api")
 app.include_router(mcp_servers.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")

@@ -1,9 +1,9 @@
-"""Project CRUD + archive/unarchive endpoints (see docs/SPEC.md #rest-api)."""
+"""Project CRUD endpoints (see docs/SPEC.md #rest-api)."""
 from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,13 +23,9 @@ async def _get_project_or_404(db: AsyncSession, project_id: uuid.UUID) -> Projec
 
 @router.get("")
 async def list_projects(
-    archived: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Project)
-    if not archived:
-        stmt = stmt.where(Project.archived.is_(False))
-    result = await db.execute(stmt.order_by(Project.created_at))
+    result = await db.execute(select(Project).order_by(Project.created_at))
     projects = result.scalars().all()
     return {"items": [ProjectRead.model_validate(p) for p in projects]}
 
@@ -60,19 +56,8 @@ async def update_project(
     return project
 
 
-@router.post("/{project_id}/archive", response_model=ProjectRead)
-async def archive_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@router.delete("/{project_id}", status_code=204)
+async def delete_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     project = await _get_project_or_404(db, project_id)
-    project.archived = True
+    await db.delete(project)
     await db.commit()
-    await db.refresh(project)
-    return project
-
-
-@router.post("/{project_id}/unarchive", response_model=ProjectRead)
-async def unarchive_project(project_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    project = await _get_project_or_404(db, project_id)
-    project.archived = False
-    await db.commit()
-    await db.refresh(project)
-    return project

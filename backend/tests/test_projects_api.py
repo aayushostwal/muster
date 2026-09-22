@@ -1,4 +1,4 @@
-"""Tests for /api/projects: create/list/get/update/archive/unarchive lifecycle."""
+"""Tests for the full /api/projects CRUD lifecycle."""
 from __future__ import annotations
 
 import uuid
@@ -36,10 +36,9 @@ async def test_project_crud_lifecycle(override_get_db):
         project = resp.json()
         project_id = project["id"]
         assert project["name"] == "Demo Project"
-        assert project["archived"] is False
         assert project["default_context_strategy"] == "full"
 
-        # list (default excludes archived, none archived yet)
+        # list
         resp = await client.get("/api/projects")
         assert resp.status_code == 200
         items = resp.json()["items"]
@@ -61,20 +60,8 @@ async def test_project_crud_lifecycle(override_get_db):
         assert resp.json()["name"] == "Renamed"
         assert resp.json()["description"] == "a test project"  # untouched
 
-        # archive
-        resp = await client.post(f"/api/projects/{project_id}/archive")
-        assert resp.status_code == 200
-        assert resp.json()["archived"] is True
-
-        # archived project excluded from default list
-        resp = await client.get("/api/projects")
-        assert resp.json()["items"] == []
-
-        # but included when explicitly requested
-        resp = await client.get("/api/projects", params={"archived": "true"})
-        assert len(resp.json()["items"]) == 1
-
-        # unarchive
-        resp = await client.post(f"/api/projects/{project_id}/unarchive")
-        assert resp.status_code == 200
-        assert resp.json()["archived"] is False
+        # delete
+        resp = await client.delete(f"/api/projects/{project_id}")
+        assert resp.status_code == 204
+        resp = await client.get(f"/api/projects/{project_id}")
+        assert resp.status_code == 404
