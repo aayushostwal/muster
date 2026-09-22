@@ -8,12 +8,14 @@ from app.config import settings
 from app.db.models import AgentBackend, Project, Task
 from app.services.agent_backends.base import (
     AdapterBindings,
+    ActivityEvent,
     AgentText,
     BlockingQuestion,
     Done,
     ErrorEvent,
     ParsedEvent,
     SessionId,
+    UsageEvent,
 )
 
 
@@ -65,6 +67,8 @@ class ClaudeCodeAdapter:
             "--verbose",
             "--permission-mode",
             "acceptEdits",
+            "--include-hook-events",
+            "--forward-subagent-text",
         ]
         for directory in bindings.directories:
             flags += ["--add-dir", directory]
@@ -76,6 +80,23 @@ class ClaudeCodeAdapter:
         model = task.model or project.default_model
         if model:
             flags += ["--model", model]
+
+        if task.fallback_models:
+            flags += ["--fallback-model", ",".join(task.fallback_models)]
+        if task.thinking_level:
+            flags += ["--effort", task.thinking_level]
+        if bindings.agent_profiles:
+            flags += ["--agents", json.dumps(bindings.agent_profiles)]
+        system_sections = []
+        if bindings.selected_agent_prompt:
+            system_sections.append(bindings.selected_agent_prompt)
+        if bindings.skills:
+            rendered = "\n\n".join(
+                f"Skill: {name}\n{instructions}" for name, instructions in bindings.skills.items()
+            )
+            system_sections.append(f"Available Muster skills:\n\n{rendered}")
+        if system_sections:
+            flags += ["--append-system-prompt", "\n\n".join(system_sections)]
 
         return flags
 
@@ -103,7 +124,7 @@ class ClaudeCodeAdapter:
         cmd += self._base_flags(task, project, bindings, secrets)
         return cmd
 
-    def parse_line(self, raw: str) -> ParsedEvent | None:
+    def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()
         if not raw:
             return None
@@ -119,15 +140,56 @@ class ClaudeCodeAdapter:
         event_type = event.get("type")
 
         if event_type == "assistant":
+            parsed: list[ParsedEvent] = []
+            if session_id:
+                parsed.append(SessionId(session_id=str(session_id)))
             text = self._extract_assistant_text(event)
             if text:
-                return AgentText(text=text)
-            return None
+                parsed.append(AgentText(text=text))
+            message = event.get("message") or {}
+            for block in message.get("content", []) if isinstance(message, dict) else []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    name = str(block.get("name") or "Tool call")
+                    kind = "agent_call" if name.lower() in {"task", "agent", "subagent"} else "tool_call"
+                    parsed.append(ActivityEvent(kind=kind, title=name, content=json.dumps(block.get("input", {}), indent=2), metadata={"tool_use_id": block.get("id")}))
+                elif block.get("type") in {"thinking", "reasoning"}:
+                    parsed.append(ActivityEvent(kind="reasoning", title="Reasoning", content=block.get("thinking") or block.get("text")))
+            return parsed or None
+
+        if event_type == "user":
+            parsed_user: list[ParsedEvent] = []
+            if session_id:
+                parsed_user.append(SessionId(session_id=str(session_id)))
+            message = event.get("message") or {}
+            for block in message.get("content", []) if isinstance(message, dict) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                content = block.get("content")
+                rendered = content if isinstance(content, str) else json.dumps(content, indent=2)
+                parsed_user.append(
+                    ActivityEvent(
+                        kind="tool_result",
+                        title="Tool result",
+                        content=rendered,
+                        metadata={"tool_use_id": block.get("tool_use_id"), "is_error": block.get("is_error", False)},
+                    )
+                )
+            return parsed_user or None
 
         if event_type == "result":
+            usage = event.get("usage") or {}
+            parsed_result: list[ParsedEvent] = []
+            if session_id:
+                parsed_result.append(SessionId(session_id=str(session_id)))
+            if usage:
+                parsed_result.append(UsageEvent(input_tokens=int(usage.get("input_tokens", 0) or 0), output_tokens=int(usage.get("output_tokens", 0) or 0), cached_tokens=int(usage.get("cache_read_input_tokens", 0) or 0) + int(usage.get("cache_creation_input_tokens", 0) or 0)))
             if event.get("subtype") == "success":
-                return Done(raw=event)
-            return ErrorEvent(message=event.get("error") or json.dumps(event))
+                parsed_result.append(Done(raw=event))
+            else:
+                parsed_result.append(ErrorEvent(message=event.get("error") or json.dumps(event)))
+            return parsed_result
 
         if event_type in ("permission_denial", "permission_request"):
             text = event.get("message") or event.get("reason") or json.dumps(event)
@@ -143,6 +205,12 @@ class ClaudeCodeAdapter:
 
         if event_type == "error":
             return ErrorEvent(message=event.get("message") or json.dumps(event))
+
+        if event_type in {"hook_started", "hook_response", "progress"}:
+            return ActivityEvent(kind="log", title=event_type.replace("_", " ").title(), content=json.dumps(event, indent=2))
+
+        if event_type == "tool_result":
+            return ActivityEvent(kind="tool_result", title="Tool result", content=json.dumps(event, indent=2))
 
         return None
 
