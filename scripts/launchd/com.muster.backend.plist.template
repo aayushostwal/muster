@@ -4,16 +4,10 @@
 <!--
   Muster backend — macOS launchd user agent template.
 
-  Placeholders substituted by scripts/install.sh (sed):
-    __HOME__         - the installing user's $HOME, e.g. /Users/alice
-    __VENV__         - path to the muster venv, e.g. /Users/alice/.muster/venv
-    __BACKEND_DIR__  - path to the checked-out backend/ dir, e.g.
-                        /Users/alice/.muster/app/backend
-    __PG_HOST__, __PG_PORT__, __PG_USER__, __PG_PASSWORD__, __PG_DB__
-                     - Postgres connection info, matching ~/.muster/muster.env
-                       and the postgres container's own credentials so the
-                       backend (via app/config.py's Settings, env_prefix
-                       "MUSTER_") connects with the same values alembic used.
+  scripts/install.sh substitutes placeholders for the installing user's home,
+  venv, backend directory/port, service PATH, and Postgres connection values.
+  The database settings match ~/.muster/muster.env and the postgres container
+  so app/config.py connects with the same values Alembic used.
 
   Installed to: ~/Library/LaunchAgents/com.muster.backend.plist
   Loaded with:  launchctl load -w ~/Library/LaunchAgents/com.muster.backend.plist
@@ -38,7 +32,7 @@
     <string>--host</string>
     <string>0.0.0.0</string>
     <string>--port</string>
-    <string>8080</string>
+    <string>__BACKEND_PORT__</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -49,7 +43,7 @@
     <key>HOME</key>
     <string>__HOME__</string>
     <key>PATH</key>
-    <string>__VENV__/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>__PATH__</string>
     <key>MUSTER_POSTGRES_HOST</key>
     <string>__PG_HOST__</string>
     <key>MUSTER_POSTGRES_PORT</key>

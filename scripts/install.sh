@@ -2,12 +2,12 @@
 #
 # Muster one-shot installer.
 #
-#   curl -fsSL https://muster.dev/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh | bash
 #
 # Installs:
 #   - ~/.muster/app        the Muster source checkout (backend/ + frontend/ etc.)
 #   - ~/.muster/venv        a dedicated Python venv with backend/requirements.txt
-#   - ~/.muster/docker-compose.yml   copy of the repo's compose file (postgres+frontend)
+#   - ~/.muster/app/docker-compose.yml   Compose definition (postgres+frontend)
 #   - launchd agent (macOS) / systemd --user unit (Linux) running uvicorn
 #   - musterctl on PATH (/usr/local/bin or ~/.local/bin)
 #
@@ -19,29 +19,97 @@ set -euo pipefail
 # Config / constants
 # ---------------------------------------------------------------------------
 MUSTER_HOME="${MUSTER_HOME:-$HOME/.muster}"
+ENV_FILE="$MUSTER_HOME/muster.env"
+
+installed_value() {
+  local key="$1"
+  [ -f "$ENV_FILE" ] || return 0
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
 APP_DIR="$MUSTER_HOME/app"
 VENV_DIR="$MUSTER_HOME/venv"
 BACKEND_DIR="$APP_DIR/backend"
-COMPOSE_FILE="$MUSTER_HOME/docker-compose.yml"
-REPO_URL="${MUSTER_REPO_URL:-https://github.com/muster-dev/muster.git}"
+COMPOSE_FILE="$APP_DIR/docker-compose.yml"
+REPO_URL="${MUSTER_REPO_URL:-https://github.com/aayushostwal/muster.git}"
 REPO_REF="${MUSTER_REPO_REF:-main}"
-POSTGRES_HOST="${MUSTER_POSTGRES_HOST:-localhost}"
-POSTGRES_PORT="${MUSTER_POSTGRES_PORT:-5432}"
-POSTGRES_USER="${MUSTER_POSTGRES_USER:-muster}"
-POSTGRES_PASSWORD="${MUSTER_POSTGRES_PASSWORD:-muster}"
-POSTGRES_DB="${MUSTER_POSTGRES_DB:-muster}"
-ENV_FILE="$MUSTER_HOME/muster.env"
+POSTGRES_HOST="${MUSTER_POSTGRES_HOST:-$(installed_value MUSTER_POSTGRES_HOST)}"
+POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
+POSTGRES_PORT="${MUSTER_POSTGRES_PORT:-$(installed_value MUSTER_POSTGRES_PORT)}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_USER="${MUSTER_POSTGRES_USER:-$(installed_value MUSTER_POSTGRES_USER)}"
+POSTGRES_USER="${POSTGRES_USER:-muster}"
+POSTGRES_PASSWORD="${MUSTER_POSTGRES_PASSWORD:-$(installed_value MUSTER_POSTGRES_PASSWORD)}"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-muster}"
+POSTGRES_DB="${MUSTER_POSTGRES_DB:-$(installed_value MUSTER_POSTGRES_DB)}"
+POSTGRES_DB="${POSTGRES_DB:-muster}"
+BACKEND_PORT="${MUSTER_BACKEND_PORT:-$(installed_value MUSTER_BACKEND_PORT)}"
+BACKEND_PORT="${BACKEND_PORT:-8080}"
+FRONTEND_PORT="${MUSTER_FRONTEND_PORT:-$(installed_value MUSTER_FRONTEND_PORT)}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+BIN_DIR="${MUSTER_BIN_DIR:-}"
+SOURCE_STAGE=""
+ENV_STAGE=""
 
 # Directory this script lives in — used when running from a local checkout
 # (`bash scripts/install.sh`) rather than piped from curl, so we can copy
 # repo files directly instead of re-cloning over the network.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-LOCAL_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-}"
+LOCAL_REPO_ROOT=""
+if [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd -P)"
+  LOCAL_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+fi
 
 info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m==> WARNING:\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31m==> ERROR:\033[0m %s\n' "$*" >&2; }
 die()   { error "$*"; exit 1; }
+
+cleanup() {
+  if [ -n "$SOURCE_STAGE" ] && [ -d "$SOURCE_STAGE" ]; then
+    rm -rf "$SOURCE_STAGE"
+  fi
+  if [ -n "$ENV_STAGE" ] && [ -f "$ENV_STAGE" ]; then
+    rm -f "$ENV_STAGE"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+validate_port() {
+  local name="$1" value="$2"
+  case "$value" in
+    ''|*[!0-9]*) die "$name must be an integer between 1 and 65535 (got: $value)" ;;
+  esac
+  [ "$value" -ge 1 ] && [ "$value" -le 65535 ] || die "$name must be between 1 and 65535 (got: $value)"
+}
+
+validate_settings() {
+  case "$MUSTER_HOME" in
+    ''|/|"$HOME") die "MUSTER_HOME must point to a dedicated installation directory" ;;
+    /*) : ;;
+    *) die "MUSTER_HOME must be an absolute path (got: $MUSTER_HOME)" ;;
+  esac
+  case "$BIN_DIR" in
+    ''|/*) : ;;
+    *) die "MUSTER_BIN_DIR must be an absolute path (got: $BIN_DIR)" ;;
+  esac
+  validate_port "MUSTER_POSTGRES_PORT" "$POSTGRES_PORT"
+  validate_port "MUSTER_BACKEND_PORT" "$BACKEND_PORT"
+  validate_port "MUSTER_FRONTEND_PORT" "$FRONTEND_PORT"
+  [ -n "$POSTGRES_USER" ] || die "MUSTER_POSTGRES_USER must not be empty"
+  [ -n "$POSTGRES_DB" ] || die "MUSTER_POSTGRES_DB must not be empty"
+  [ -n "$REPO_URL" ] || die "MUSTER_REPO_URL must not be empty"
+  [ -n "$REPO_REF" ] || die "MUSTER_REPO_REF must not be empty"
+  local value
+  for value in "$MUSTER_HOME" "$BIN_DIR" "$POSTGRES_HOST" "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB"; do
+    case "$value" in
+      *$'\n'*|*$'\r'*) die "Postgres settings must not contain newlines" ;;
+    esac
+  done
+}
 
 # ---------------------------------------------------------------------------
 # 1. Detect OS / arch
@@ -71,6 +139,7 @@ detect_arch() {
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 info "Detected platform: ${OS}/${ARCH}"
+validate_settings
 
 # ---------------------------------------------------------------------------
 # 2. Prerequisite checks
@@ -141,75 +210,124 @@ info "Prerequisites OK (python: $PYTHON_BIN)"
 mkdir -p "$MUSTER_HOME"
 
 # ---------------------------------------------------------------------------
-# 2b. Write the env file the backend, alembic, launchd (via sed) and systemd
-#     (via EnvironmentFile=) all read Postgres connection info from. This is
-#     the single source of truth — nothing here is guessed from
-#     docker-compose.yml's own defaults, since a user overriding
-#     MUSTER_POSTGRES_* must have both docker-compose and the native backend
-#     agree.
+# 3. Fetch source into ~/.muster/app
 # ---------------------------------------------------------------------------
+canonical_target() {
+  local path="$1" parent name
+  parent="$(dirname "$path")"
+  name="$(basename "$path")"
+  mkdir -p "$parent"
+  printf '%s/%s\n' "$(cd "$parent" && pwd -P)" "$name"
+}
+
+stage_local_source() {
+  local source="$1"
+  info "Installing from local checkout at $source"
+  mkdir -p "$SOURCE_STAGE"
+  if have rsync; then
+    rsync -a --delete \
+      --exclude '.git' \
+      --exclude '.venv' \
+      --exclude 'venv' \
+      --exclude 'node_modules' \
+      --exclude '.next' \
+      --exclude '.nexus' \
+      --exclude '__pycache__' \
+      --exclude '.pytest_cache' \
+      --exclude '.DS_Store' \
+      "$source"/ "$SOURCE_STAGE"/
+  else
+    cp -R "$source"/. "$SOURCE_STAGE"/
+    rm -rf \
+      "$SOURCE_STAGE/.git" \
+      "$SOURCE_STAGE/.venv" \
+      "$SOURCE_STAGE/venv" \
+      "$SOURCE_STAGE/backend/.venv" \
+      "$SOURCE_STAGE/backend/.pytest_cache" \
+      "$SOURCE_STAGE/frontend/node_modules" \
+      "$SOURCE_STAGE/frontend/.next" \
+      "$SOURCE_STAGE/.nexus"
+  fi
+}
+
+activate_staged_source() {
+  local previous=""
+  [ -f "$SOURCE_STAGE/backend/app/main.py" ] || die "Staged source is missing backend/app/main.py"
+  [ -f "$SOURCE_STAGE/docker-compose.yml" ] || die "Staged source is missing docker-compose.yml"
+
+  if [ -e "$APP_DIR" ]; then
+    previous="$MUSTER_HOME/.app.previous.$$"
+    rm -rf "$previous"
+    mv "$APP_DIR" "$previous"
+  fi
+
+  if mv "$SOURCE_STAGE" "$APP_DIR"; then
+    SOURCE_STAGE=""
+    [ -z "$previous" ] || rm -rf "$previous"
+  else
+    [ -z "$previous" ] || mv "$previous" "$APP_DIR"
+    die "Could not activate the staged source tree"
+  fi
+}
+
+fetch_source() {
+  local requested_source="${MUSTER_SOURCE_DIR:-$LOCAL_REPO_ROOT}"
+  local source_path="" app_path
+  app_path="$(canonical_target "$APP_DIR")"
+
+  if [ -n "${MUSTER_SOURCE_DIR:-}" ] && { [ ! -f "$MUSTER_SOURCE_DIR/backend/app/main.py" ] || [ ! -f "$MUSTER_SOURCE_DIR/docker-compose.yml" ]; }; then
+    die "MUSTER_SOURCE_DIR is not a Muster checkout: $MUSTER_SOURCE_DIR"
+  fi
+
+  if [ -n "$requested_source" ] && [ -f "$requested_source/backend/app/main.py" ] && [ -f "$requested_source/docker-compose.yml" ]; then
+    source_path="$(cd "$requested_source" && pwd -P)"
+  fi
+
+  # `musterctl install` executes the copy already under APP_DIR. Treating that
+  # as a local source would make rsync/cp mirror the directory onto itself.
+  # Fetch a fresh remote tree instead. Also reject an install root nested in a
+  # separate local source checkout, which would recurse while copying.
+  if [ -n "$source_path" ] && [ "$source_path" = "$app_path" ]; then
+    source_path=""
+  elif [ -n "$source_path" ]; then
+    case "$app_path/" in
+      "$source_path"/*) die "MUSTER_HOME must not be inside the source checkout ($source_path)" ;;
+    esac
+  fi
+
+  SOURCE_STAGE="$MUSTER_HOME/.app.stage.$$"
+  rm -rf "$SOURCE_STAGE"
+
+  if [ -n "$source_path" ]; then
+    stage_local_source "$source_path"
+  else
+    info "Fetching $REPO_URL ($REPO_REF)"
+    git clone --depth 1 --branch "$REPO_REF" -- "$REPO_URL" "$SOURCE_STAGE"
+  fi
+  activate_staged_source
+}
+
+fetch_source
+[ -f "$BACKEND_DIR/requirements.txt" ] || die "backend/requirements.txt not found under $APP_DIR — install source looks incomplete."
+
+# Persist the settings shared by musterctl, Docker Compose, Alembic, and the
+# rendered native backend service only after the new source is active. The
+# file is deliberately parsed as data and is never shell-sourced.
 info "Writing $ENV_FILE"
-cat > "$ENV_FILE" <<EOF
+ENV_STAGE="$MUSTER_HOME/.muster.env.$$"
+( umask 077 && cat > "$ENV_STAGE" <<EOF
 MUSTER_POSTGRES_HOST=${POSTGRES_HOST}
 MUSTER_POSTGRES_PORT=${POSTGRES_PORT}
 MUSTER_POSTGRES_USER=${POSTGRES_USER}
 MUSTER_POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 MUSTER_POSTGRES_DB=${POSTGRES_DB}
+MUSTER_BACKEND_PORT=${BACKEND_PORT}
+MUSTER_FRONTEND_PORT=${FRONTEND_PORT}
 EOF
+)
+mv "$ENV_STAGE" "$ENV_FILE"
+ENV_STAGE=""
 chmod 600 "$ENV_FILE"
-
-# ---------------------------------------------------------------------------
-# 3. Fetch source into ~/.muster/app
-# ---------------------------------------------------------------------------
-fetch_source() {
-  # --- FOR NOW: git-clone based flow -----------------------------------
-  # There is no tagged GitHub Release yet, so we clone (or, if this script
-  # is itself running from a local checkout, rsync that checkout) into
-  # ~/.muster/app. This is the path actually exercised today.
-  if [ -f "$LOCAL_REPO_ROOT/backend/app/main.py" ] && [ -f "$LOCAL_REPO_ROOT/docker-compose.yml" ]; then
-    info "Installing from local checkout at $LOCAL_REPO_ROOT"
-    mkdir -p "$APP_DIR"
-    # Mirror the local repo in, excluding VCS/venv/node cruft.
-    if have rsync; then
-      rsync -a --delete \
-        --exclude '.git' \
-        --exclude '.venv' \
-        --exclude 'venv' \
-        --exclude 'node_modules' \
-        --exclude '__pycache__' \
-        "$LOCAL_REPO_ROOT"/ "$APP_DIR"/
-    else
-      rm -rf "$APP_DIR"
-      mkdir -p "$APP_DIR"
-      cp -R "$LOCAL_REPO_ROOT"/. "$APP_DIR"/
-    fi
-  elif [ -d "$APP_DIR/.git" ]; then
-    info "Updating existing checkout at $APP_DIR"
-    git -C "$APP_DIR" fetch --depth 1 origin "$REPO_REF"
-    git -C "$APP_DIR" checkout "$REPO_REF"
-    git -C "$APP_DIR" reset --hard "origin/$REPO_REF"
-  else
-    info "Cloning $REPO_URL ($REPO_REF) into $APP_DIR"
-    rm -rf "$APP_DIR"
-    git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$APP_DIR"
-  fi
-
-  # --- FUTURE: tarball-download flow (once GitHub Releases exist) ------
-  # When a real release pipeline exists, replace the block above with
-  # something like:
-  #
-  #   RELEASE_URL="https://github.com/muster-dev/muster/releases/download/${MUSTER_VERSION}/muster-${MUSTER_VERSION}.tar.gz"
-  #   curl -fsSL "$RELEASE_URL" -o "$MUSTER_HOME/muster.tar.gz"
-  #   mkdir -p "$APP_DIR"
-  #   tar -xzf "$MUSTER_HOME/muster.tar.gz" -C "$APP_DIR" --strip-components=1
-  #   rm -f "$MUSTER_HOME/muster.tar.gz"
-  #
-  # Left commented out (not implemented) until a release artifact exists.
-  :
-}
-
-fetch_source
-[ -f "$BACKEND_DIR/requirements.txt" ] || die "backend/requirements.txt not found under $APP_DIR — install source looks incomplete."
 
 # ---------------------------------------------------------------------------
 # 4. Create venv + install backend deps
@@ -221,16 +339,26 @@ info "Installing backend/requirements.txt into venv"
 "$VENV_DIR/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
 
 # ---------------------------------------------------------------------------
-# 5. Copy docker-compose.yml and bring up postgres + frontend
+# 5. Bring up postgres + frontend
 # ---------------------------------------------------------------------------
-info "Copying docker-compose.yml to $COMPOSE_FILE"
-cp "$APP_DIR/docker-compose.yml" "$COMPOSE_FILE"
+[ -f "$COMPOSE_FILE" ] || die "docker-compose.yml not found at $COMPOSE_FILE"
+
+compose() {
+  (
+    cd "$APP_DIR"
+    env \
+      "MUSTER_POSTGRES_PORT=$POSTGRES_PORT" \
+      "MUSTER_POSTGRES_USER=$POSTGRES_USER" \
+      "MUSTER_POSTGRES_PASSWORD=$POSTGRES_PASSWORD" \
+      "MUSTER_POSTGRES_DB=$POSTGRES_DB" \
+      "MUSTER_FRONTEND_PORT=$FRONTEND_PORT" \
+      "MUSTER_API_URL=http://localhost:$BACKEND_PORT" \
+      docker compose --project-name muster -f "$COMPOSE_FILE" "$@"
+  )
+}
 
 info "Starting postgres + frontend via docker compose"
-# docker-compose.yml reads POSTGRES_PASSWORD (unprefixed) from the shell
-# environment it's invoked in; export it here so it matches the
-# MUSTER_POSTGRES_PASSWORD the native backend uses (see $ENV_FILE above).
-( cd "$MUSTER_HOME" && POSTGRES_PASSWORD="$POSTGRES_PASSWORD" MUSTER_API_URL="http://localhost:8080" docker compose -f "$COMPOSE_FILE" up -d postgres frontend )
+compose up -d --build postgres frontend
 
 # ---------------------------------------------------------------------------
 # 6. Wait for Postgres to be ready (poll, don't sleep a fixed time)
@@ -238,16 +366,20 @@ info "Starting postgres + frontend via docker compose"
 wait_for_postgres() {
   local timeout="${MUSTER_PG_WAIT_TIMEOUT:-90}"
   local waited=0
+  case "$timeout" in
+    ''|*[!0-9]*) die "MUSTER_PG_WAIT_TIMEOUT must be a positive integer (got: $timeout)" ;;
+  esac
+  [ "$timeout" -gt 0 ] || die "MUSTER_PG_WAIT_TIMEOUT must be greater than zero"
   info "Waiting for Postgres to become ready (timeout ${timeout}s)..."
   while [ "$waited" -lt "$timeout" ]; do
-    if ( cd "$MUSTER_HOME" && docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" >/dev/null 2>&1 ); then
+    if compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
       info "Postgres is ready."
       return 0
     fi
     sleep 2
     waited=$((waited + 2))
   done
-  die "Postgres did not become ready within ${timeout}s. Check: docker compose -f $COMPOSE_FILE logs postgres"
+  die "Postgres did not become ready within ${timeout}s. Check: musterctl logs postgres"
 }
 
 wait_for_postgres
@@ -260,12 +392,77 @@ info "Running alembic upgrade head"
 # env_prefix="MUSTER_" and individual postgres_host/port/user/password/db
 # fields — it does not read a DATABASE_URL. Export the same MUSTER_POSTGRES_*
 # vars written to $ENV_FILE so alembic's env.py builds the same DSN the
-# running backend will.
-( cd "$BACKEND_DIR" && set -a && . "$ENV_FILE" && set +a && "$VENV_DIR/bin/python" -m alembic upgrade head )
+# running backend will. Values are passed directly instead of shell-sourcing
+# the EnvironmentFile, so passwords containing shell metacharacters are safe.
+(
+  cd "$BACKEND_DIR"
+  env \
+    "MUSTER_POSTGRES_HOST=$POSTGRES_HOST" \
+    "MUSTER_POSTGRES_PORT=$POSTGRES_PORT" \
+    "MUSTER_POSTGRES_USER=$POSTGRES_USER" \
+    "MUSTER_POSTGRES_PASSWORD=$POSTGRES_PASSWORD" \
+    "MUSTER_POSTGRES_DB=$POSTGRES_DB" \
+    "$VENV_DIR/bin/python" -m alembic upgrade head
+)
 
 # ---------------------------------------------------------------------------
 # 8. Install + start the backend service (launchd / systemd)
 # ---------------------------------------------------------------------------
+render_service_template() {
+  local kind="$1" template="$2" destination="$3"
+  local service_path="$VENV_DIR/bin:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+  RENDER_KIND="$kind" \
+  RENDER_HOME="$HOME" \
+  RENDER_VENV="$VENV_DIR" \
+  RENDER_BACKEND_DIR="$BACKEND_DIR" \
+  RENDER_BACKEND_PORT="$BACKEND_PORT" \
+  RENDER_PATH="$service_path" \
+  RENDER_ENV_FILE="$ENV_FILE" \
+  RENDER_PG_HOST="$POSTGRES_HOST" \
+  RENDER_PG_PORT="$POSTGRES_PORT" \
+  RENDER_PG_USER="$POSTGRES_USER" \
+  RENDER_PG_PASSWORD="$POSTGRES_PASSWORD" \
+  RENDER_PG_DB="$POSTGRES_DB" \
+    "$VENV_DIR/bin/python" - "$template" "$destination" <<'PY'
+import html
+import os
+from pathlib import Path
+import re
+import sys
+
+kind, source, destination = os.environ["RENDER_KIND"], Path(sys.argv[1]), Path(sys.argv[2])
+values = {
+    "HOME": os.environ["RENDER_HOME"],
+    "VENV": os.environ["RENDER_VENV"],
+    "BACKEND_DIR": os.environ["RENDER_BACKEND_DIR"],
+    "BACKEND_PORT": os.environ["RENDER_BACKEND_PORT"],
+    "PATH": os.environ["RENDER_PATH"],
+    "ENV_FILE": os.environ["RENDER_ENV_FILE"],
+    "PG_HOST": os.environ["RENDER_PG_HOST"],
+    "PG_PORT": os.environ["RENDER_PG_PORT"],
+    "PG_USER": os.environ["RENDER_PG_USER"],
+    "PG_PASSWORD": os.environ["RENDER_PG_PASSWORD"],
+    "PG_DB": os.environ["RENDER_PG_DB"],
+}
+
+def escape(value: str) -> str:
+    if kind == "plist":
+        return html.escape(value, quote=True)
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+
+rendered = source.read_text()
+for key, value in values.items():
+    rendered = rendered.replace(f"__{key}__", escape(value))
+
+unresolved = sorted(set(re.findall(r"__[A-Z0-9_]+__", rendered)))
+if unresolved:
+    raise SystemExit(f"unresolved service template placeholders: {', '.join(unresolved)}")
+
+destination.write_text(rendered)
+PY
+}
+
 install_service() {
   local whoami_user home_dir
   whoami_user="$(whoami)"
@@ -278,16 +475,7 @@ install_service() {
     local dest="$home_dir/Library/LaunchAgents/com.muster.backend.plist"
     [ -f "$template" ] || die "launchd template not found at $template"
 
-    sed \
-      -e "s#__HOME__#${home_dir}#g" \
-      -e "s#__VENV__#${VENV_DIR}#g" \
-      -e "s#__BACKEND_DIR__#${BACKEND_DIR}#g" \
-      -e "s#__PG_HOST__#${POSTGRES_HOST}#g" \
-      -e "s#__PG_PORT__#${POSTGRES_PORT}#g" \
-      -e "s#__PG_USER__#${POSTGRES_USER}#g" \
-      -e "s#__PG_PASSWORD__#${POSTGRES_PASSWORD}#g" \
-      -e "s#__PG_DB__#${POSTGRES_DB}#g" \
-      "$template" > "$dest"
+    render_service_template "plist" "$template" "$dest"
     chmod 600 "$dest"  # contains the Postgres password
 
     info "Loading launchd agent com.muster.backend"
@@ -299,12 +487,8 @@ install_service() {
     local dest="$home_dir/.config/systemd/user/muster.service"
     [ -f "$template" ] || die "systemd template not found at $template"
 
-    sed \
-      -e "s#__HOME__#${home_dir}#g" \
-      -e "s#__VENV__#${VENV_DIR}#g" \
-      -e "s#__BACKEND_DIR__#${BACKEND_DIR}#g" \
-      -e "s#__ENV_FILE__#${ENV_FILE}#g" \
-      "$template" > "$dest"
+    render_service_template "systemd" "$template" "$dest"
+    chmod 600 "$dest"  # contains the Postgres password
 
     info "Enabling+starting systemd --user muster.service"
     systemctl --user daemon-reload
@@ -320,23 +504,30 @@ install_service
 # 9. Install musterctl on PATH
 # ---------------------------------------------------------------------------
 install_cli() {
-  local src="$APP_DIR/cli/musterctl"
+  local src="$APP_DIR/cli/musterctl" target_dir
   [ -f "$src" ] || die "cli/musterctl not found at $src"
   chmod +x "$src"
 
-  if [ -w /usr/local/bin ] 2>/dev/null || { [ ! -e /usr/local/bin ] && mkdir -p /usr/local/bin 2>/dev/null; }; then
-    cp "$src" /usr/local/bin/musterctl
-    chmod +x /usr/local/bin/musterctl
-    info "Installed musterctl to /usr/local/bin/musterctl"
+  if [ -n "$BIN_DIR" ]; then
+    target_dir="$BIN_DIR"
+  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    target_dir="/usr/local/bin"
+  elif [ ! -e /usr/local/bin ] && [ -d /usr/local ] && [ -w /usr/local ]; then
+    target_dir="/usr/local/bin"
   else
-    mkdir -p "$HOME/.local/bin"
-    cp "$src" "$HOME/.local/bin/musterctl"
-    chmod +x "$HOME/.local/bin/musterctl"
-    info "Installed musterctl to $HOME/.local/bin/musterctl"
+    target_dir="$HOME/.local/bin"
+  fi
+
+  mkdir -p "$target_dir"
+  cp "$src" "$target_dir/musterctl"
+  chmod +x "$target_dir/musterctl"
+  info "Installed musterctl to $target_dir/musterctl"
+
+  if [ "$target_dir" != "/usr/local/bin" ]; then
     case ":$PATH:" in
-      *":$HOME/.local/bin:"*) : ;;
-      *) warn "$HOME/.local/bin is not on your PATH. Add this to your shell rc file:
-       export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+      *":$target_dir:"*) : ;;
+      *) warn "$target_dir is not on your PATH. Add this to your shell rc file:
+       export PATH=\"$target_dir:\$PATH\"" ;;
     esac
   fi
 }
@@ -350,15 +541,15 @@ cat <<EOF
 
 Muster is installed.
 
-  Frontend:  http://localhost:3000
-  Backend:   http://localhost:8080
+  Frontend:  http://localhost:${FRONTEND_PORT}
+  Backend:   http://localhost:${BACKEND_PORT}
   Postgres:  localhost:${POSTGRES_PORT} (user: ${POSTGRES_USER}, db: ${POSTGRES_DB})
 
   musterctl status        # check backend + frontend + postgres
-  musterctl logs -f backend
+  musterctl logs backend -f
   musterctl doctor        # verify ports, venv, CLIs on PATH
 
 Data/config root: $MUSTER_HOME
-Docs: $APP_DIR/docs/OPERATIONS.md
+Docs: $APP_DIR/docs/CLI.md
 
 EOF

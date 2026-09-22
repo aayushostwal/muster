@@ -35,8 +35,33 @@ a project without container bind mounts.
 ## Install
 
 ```bash
-curl -fsSL https://muster.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh | bash
 ```
+
+Installer settings can be supplied to the `bash` process. Existing values in
+`~/.muster/muster.env` are reused during a reinstall unless explicitly
+overridden:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh \
+  | env MUSTER_BACKEND_PORT=8181 MUSTER_FRONTEND_PORT=3100 bash
+```
+
+| Installer variable | Default | Purpose |
+|---|---|---|
+| `MUSTER_HOME` | `~/.muster` | Dedicated installation root. |
+| `MUSTER_REPO_URL` | This GitHub repository | Git remote used by bootstrap/reinstall. |
+| `MUSTER_REPO_REF` | `main` | Branch or tag cloned from the remote. |
+| `MUSTER_SOURCE_DIR` | Auto-detected local checkout | Explicit local source for checkout-based installs. |
+| `MUSTER_BIN_DIR` | `/usr/local/bin` or `~/.local/bin` | Explicit `musterctl` destination, useful for managed environments. |
+| `MUSTER_BACKEND_PORT` | `8080` | Native backend listen port. |
+| `MUSTER_FRONTEND_PORT` | `3000` | Frontend host port. |
+| `MUSTER_POSTGRES_PORT` | `5432` | Postgres host port. |
+| `MUSTER_POSTGRES_HOST` | `localhost` | Host used by the native backend. |
+| `MUSTER_POSTGRES_USER` | `muster` | Postgres user. |
+| `MUSTER_POSTGRES_PASSWORD` | `muster` | Postgres password. |
+| `MUSTER_POSTGRES_DB` | `muster` | Postgres database. |
+| `MUSTER_PG_WAIT_TIMEOUT` | `90` | Seconds to wait for Postgres readiness. |
 
 This runs `scripts/install.sh`, which:
 
@@ -44,17 +69,16 @@ This runs `scripts/install.sh`, which:
 2. Checks prerequisites: `docker`, `docker compose` (v2 plugin), `python3.12`
    (or `python3 >= 3.11` with a warning), `git`. Missing prerequisites abort
    with an install hint (e.g. `brew install ...` / `apt-get install ...`).
-3. Fetches source into `~/.muster/app` — currently via `git clone`/local
-   checkout copy (there's no tagged GitHub Release yet); a tarball-download
-   path is stubbed in the script for when one exists.
+3. Fetches source into a staging directory via Git clone or local checkout
+   copy, verifies it, then atomically replaces `~/.muster/app`.
 4. Creates `~/.muster/venv` and installs `backend/requirements.txt`.
-5. Copies `docker-compose.yml` to `~/.muster/docker-compose.yml` and runs
-   `docker compose up -d postgres frontend`.
+5. Runs `~/.muster/app/docker-compose.yml` in place so its frontend build
+   context resolves correctly, then starts Postgres and the frontend.
 6. Polls Postgres (`pg_isready`) until ready (default timeout 90s — no fixed
    sleep), then runs `alembic upgrade head` from the venv.
-7. Installs and starts the launchd agent (macOS) / systemd `--user` unit
-   (Linux), with `__HOME__`/`__VENV__`/`__BACKEND_DIR__` substituted from
-   the templates in `scripts/launchd/` and `scripts/systemd/`.
+7. Safely renders and starts the launchd agent (macOS) / systemd `--user` unit
+   (Linux), including the configured backend port and the installer's PATH so
+   locally installed Claude and Codex commands remain discoverable.
 8. Installs `musterctl` to `/usr/local/bin` (or `~/.local/bin`, with a PATH
    warning if needed).
 9. Prints a summary: frontend/backend URLs and next commands.
@@ -81,7 +105,7 @@ overrides, exit status, safety notes, and troubleshooting.
 | `musterctl restart` | Restart all three components |
 | `musterctl status` | Live status of backend, postgres, frontend |
 | `musterctl logs [backend\|frontend\|postgres\|all] [-f]` | Show/follow logs |
-| `musterctl upgrade` | Pull source, reinstall venv deps, `alembic upgrade head`, `docker compose pull && up -d`, restart backend — no data touched |
+| `musterctl upgrade` | Pull source, reinstall venv deps, migrate, pull Postgres, rebuild the frontend, and restart services — no data intentionally deleted |
 | `musterctl uninstall [--purge] [--yes]` | Stop + remove service files and containers. `--purge` also drops the Postgres volume and `~/.muster/data` (interactive confirmation unless `--yes`) |
 | `musterctl db shell` | `psql` shell into the postgres container |
 | `musterctl db backup [path]` | `pg_dump`; default path `~/.muster/backups/muster-<timestamp>.sql` |
@@ -101,11 +125,12 @@ management calls between `launchctl` and `systemctl --user` accordingly.
 musterctl upgrade
 ```
 
-1. `git pull --ff-only` in `~/.muster/app` (or warns and skips if not a git
-   checkout — e.g. installed from a future release tarball).
+1. `git pull --ff-only` in `~/.muster/app` (or warns and skips for installs
+   copied from a local checkout without Git metadata).
 2. Reinstalls `backend/requirements.txt` into the existing venv.
 3. `alembic upgrade head`.
-4. `docker compose pull && docker compose up -d` for postgres + frontend.
+4. Pulls the Postgres image and rebuilds the frontend from the updated source,
+   then recreates both Compose services.
 5. Restarts the backend service.
 
 No Postgres data, `~/.muster/data`, or secrets are touched by an upgrade.
@@ -138,21 +163,19 @@ passed.
 |---|---|
 | macOS launchd agent | `~/Library/LaunchAgents/com.muster.backend.plist` |
 | Linux systemd user unit | `~/.config/systemd/user/muster.service` |
-| Compose file copy | `~/.muster/docker-compose.yml` |
+| Compose file | `~/.muster/app/docker-compose.yml` |
 | Postgres connection info | `~/.muster/muster.env` (`MUSTER_POSTGRES_*`, mode 600) |
 | CLI | `/usr/local/bin/musterctl` or `~/.local/bin/musterctl` |
 
 Templates for the service files live in `scripts/launchd/` and
-`scripts/systemd/` and are substituted (`__HOME__`, `__VENV__`,
-`__BACKEND_DIR__`, plus `__PG_*__` on macOS / `__ENV_FILE__` on Linux) by
-`scripts/install.sh` at install time.
+`scripts/systemd/`. `scripts/install.sh` renders their home, venv, backend,
+port, PATH, and Postgres placeholders with platform-appropriate escaping.
 
 `~/.muster/muster.env` is the single source of truth for Postgres
-credentials: `install.sh` writes it, `alembic upgrade head` sources it, the
-`postgres` container is started with the same `POSTGRES_PASSWORD`, and the
-native backend reads it too — inlined into the launchd plist's
-`EnvironmentVariables` on macOS (launchd can't source a file), or via
-`EnvironmentFile=` on Linux systemd. `app/config.py`'s `Settings` only reads
-individual `MUSTER_POSTGRES_HOST/PORT/USER/PASSWORD/DB` vars (env_prefix
+credentials and installed ports: `install.sh` writes it, `musterctl` reads it,
+and the Postgres container, Alembic, and native backend receive the same
+values. Database values are safely rendered into both platform service files
+rather than shell-sourcing the env file. `app/config.py`'s `Settings` only
+reads individual `MUSTER_POSTGRES_HOST/PORT/USER/PASSWORD/DB` vars (env_prefix
 `MUSTER_`), not a combined `DATABASE_URL` — anything wiring Postgres
 connection info into the backend's environment must use those names.
