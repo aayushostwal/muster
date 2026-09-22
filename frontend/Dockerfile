@@ -1,19 +1,30 @@
-# Build stage
-FROM node:20-alpine AS build
+FROM node:22-alpine AS dependencies
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:22-alpine AS builder
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-# Serve stage: nginx serves the static build on port 3000.
-# VITE_API_URL is re-injected at container start (see docker-entrypoint.sh)
-# since docker-compose passes it as a runtime env var, not a build arg, and
-# Vite normally only inlines import.meta.env.* at build time.
-FROM nginx:1.27-alpine AS serve
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY docker-entrypoint.sh /docker-entrypoint.d/50-muster-runtime-config.sh
-RUN chmod +x /docker-entrypoint.d/50-muster-runtime-config.sh
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --chown=nextjs:nodejs docker-entrypoint.sh /usr/local/bin/muster-frontend
+RUN chmod +x /usr/local/bin/muster-frontend
+
+USER nextjs
 EXPOSE 3000
+ENTRYPOINT ["muster-frontend"]
+CMD ["node", "server.js"]

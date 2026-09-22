@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Postgres + frontend only. The backend runs natively on the host (see
 # scripts/install.sh, cli/musterctl) so it has direct filesystem access to
 # any local directory without container bind mounts.
@@ -26,7 +24,7 @@ services:
       context: ./frontend
     restart: unless-stopped
     environment:
-      - VITE_API_URL=${MUSTER_API_URL:-http://localhost:8080}
+      - MUSTER_API_URL=${MUSTER_API_URL:-http://localhost:8080}
     ports:
       - "3000:3000"
 
