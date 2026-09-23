@@ -48,6 +48,13 @@ BACKEND_PORT="${BACKEND_PORT:-8080}"
 FRONTEND_PORT="${MUSTER_FRONTEND_PORT:-$(installed_value MUSTER_FRONTEND_PORT)}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 BIN_DIR="${MUSTER_BIN_DIR:-}"
+PYTHON_VERSION="${MUSTER_PYTHON_VERSION:-3.12}"
+UV_VERSION="${MUSTER_UV_VERSION:-0.12.17}"
+UV_BIN="$MUSTER_HOME/tools/uv"
+UV_PYTHON_DIR="$MUSTER_HOME/python"
+UV_CACHE_DIR="$MUSTER_HOME/cache/uv"
+PYTHON_BIN=""
+USE_MANAGED_PYTHON="0"
 SOURCE_STAGE=""
 ENV_STAGE=""
 
@@ -103,6 +110,12 @@ validate_settings() {
   [ -n "$POSTGRES_DB" ] || die "MUSTER_POSTGRES_DB must not be empty"
   [ -n "$REPO_URL" ] || die "MUSTER_REPO_URL must not be empty"
   [ -n "$REPO_REF" ] || die "MUSTER_REPO_REF must not be empty"
+  case "$PYTHON_VERSION" in
+    ''|*[!0-9.]*) die "MUSTER_PYTHON_VERSION must be a numeric Python version (got: $PYTHON_VERSION)" ;;
+  esac
+  case "$UV_VERSION" in
+    ''|*[!0-9.]*) die "MUSTER_UV_VERSION must be a numeric uv version (got: $UV_VERSION)" ;;
+  esac
   local value
   for value in "$MUSTER_HOME" "$BIN_DIR" "$POSTGRES_HOST" "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB"; do
     case "$value" in
@@ -176,19 +189,16 @@ check_prereqs() {
       PYTHON_BIN="python3"
       warn "python3.12 not found; falling back to python3 ($ver). Muster is developed against 3.12 — things should work on 3.11+ but this is a fallback, not the primary target."
     else
-      error "python3 >= 3.11 is required (found $ver)."
-      case "$OS" in
-        darwin) echo "    Install: brew install python@3.12" ;;
-        linux)  echo "    Install: sudo apt-get install python3.12 python3.12-venv   (or your distro equivalent)" ;;
-      esac
-      missing=1
+      warn "System python3 is $ver; Muster will provision an isolated Python $PYTHON_VERSION runtime."
+      USE_MANAGED_PYTHON="1"
     fi
   else
-    error "python3 is required but not found."
-    case "$OS" in
-      darwin) echo "    Install: brew install python@3.12" ;;
-      linux)  echo "    Install: sudo apt-get install python3.12 python3.12-venv" ;;
-    esac
+    warn "No system Python found; Muster will provision an isolated Python $PYTHON_VERSION runtime."
+    USE_MANAGED_PYTHON="1"
+  fi
+
+  if [ "$USE_MANAGED_PYTHON" = "1" ] && ! have curl; then
+    error "curl is required to provision Muster's isolated Python runtime."
     missing=1
   fi
 
@@ -205,7 +215,11 @@ check_prereqs() {
 }
 
 check_prereqs
-info "Prerequisites OK (python: $PYTHON_BIN)"
+if [ "$USE_MANAGED_PYTHON" = "1" ]; then
+  info "Prerequisites OK (Python $PYTHON_VERSION will be managed under $MUSTER_HOME)"
+else
+  info "Prerequisites OK (python: $PYTHON_BIN)"
+fi
 
 mkdir -p "$MUSTER_HOME"
 
@@ -332,8 +346,44 @@ chmod 600 "$ENV_FILE"
 # ---------------------------------------------------------------------------
 # 4. Create venv + install backend deps
 # ---------------------------------------------------------------------------
-info "Creating venv at $VENV_DIR"
-"$PYTHON_BIN" -m venv "$VENV_DIR"
+bootstrap_uv() {
+  if [ -x "$UV_BIN" ]; then
+    info "Using managed uv at $UV_BIN"
+    return 0
+  fi
+
+  info "Installing uv $UV_VERSION into $MUSTER_HOME/tools"
+  mkdir -p "$MUSTER_HOME/tools"
+  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
+    | env UV_UNMANAGED_INSTALL="$MUSTER_HOME/tools" sh
+  [ -x "$UV_BIN" ] || die "uv installation did not create $UV_BIN"
+}
+
+create_managed_venv() {
+  bootstrap_uv
+  info "Creating venv with managed Python $PYTHON_VERSION at $VENV_DIR"
+  env \
+    UV_CACHE_DIR="$UV_CACHE_DIR" \
+    UV_NO_CONFIG=1 \
+    UV_MANAGED_PYTHON=1 \
+    UV_PYTHON_INSTALL_DIR="$UV_PYTHON_DIR" \
+    "$UV_BIN" venv --clear --seed --managed-python \
+      --python "$PYTHON_VERSION" "$VENV_DIR"
+}
+
+if [ "$USE_MANAGED_PYTHON" = "1" ]; then
+  create_managed_venv
+else
+  info "Creating venv at $VENV_DIR"
+  if ! "$PYTHON_BIN" -m venv --clear "$VENV_DIR"; then
+    warn "$PYTHON_BIN could not create a venv; falling back to managed Python $PYTHON_VERSION."
+    rm -rf "$VENV_DIR"
+    create_managed_venv
+  fi
+fi
+
+"$VENV_DIR/bin/python" -c \
+  'import sys; assert sys.version_info >= (3, 11), f"Python 3.11+ required, got {sys.version}"'
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null
 info "Installing backend/requirements.txt into venv"
 "$VENV_DIR/bin/pip" install -r "$BACKEND_DIR/requirements.txt"

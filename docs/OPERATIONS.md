@@ -54,6 +54,8 @@ curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/in
 | `MUSTER_REPO_REF` | `main` | Branch or tag cloned from the remote. |
 | `MUSTER_SOURCE_DIR` | Auto-detected local checkout | Explicit local source for checkout-based installs. |
 | `MUSTER_BIN_DIR` | `/usr/local/bin` or `~/.local/bin` | Explicit `musterctl` destination, useful for managed environments. |
+| `MUSTER_PYTHON_VERSION` | `3.12` | Managed Python version provisioned when the host has no compatible interpreter. |
+| `MUSTER_UV_VERSION` | `0.12.17` | Pinned uv release used to provision managed Python. |
 | `MUSTER_BACKEND_PORT` | `8080` | Native backend listen port. |
 | `MUSTER_FRONTEND_PORT` | `3000` | Frontend host port. |
 | `MUSTER_POSTGRES_PORT` | `5432` | Postgres host port. |
@@ -66,12 +68,14 @@ curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/in
 This runs `scripts/install.sh`, which:
 
 1. Detects OS (darwin/linux) and arch (arm64/amd64).
-2. Checks prerequisites: `docker`, `docker compose` (v2 plugin), `python3.12`
-   (or `python3 >= 3.11` with a warning), `git`. Missing prerequisites abort
-   with an install hint (e.g. `brew install ...` / `apt-get install ...`).
+2. Checks required host tools: `docker`, the Docker Compose v2 plugin, and
+   `git`. A system Python 3.11+ is reused when available. Otherwise the
+   installer downloads a pinned `uv` binary and provisions an isolated
+   Python 3.12 runtime under `~/.muster`; it never replaces the system Python.
 3. Fetches source into a staging directory via Git clone or local checkout
    copy, verifies it, then atomically replaces `~/.muster/app`.
-4. Creates `~/.muster/venv` and installs `backend/requirements.txt`.
+4. Creates a fresh `~/.muster/venv`, verifies its interpreter is Python 3.11+
+   and installs `backend/requirements.txt`.
 5. Runs `~/.muster/app/docker-compose.yml` in place so its frontend build
    context resolves correctly, then starts Postgres and the frontend.
 6. Polls Postgres (`pg_isready`) until ready (default timeout 90s — no fixed

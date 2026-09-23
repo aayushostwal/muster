@@ -2,13 +2,18 @@
 
 `install.sh` is the one-shot installer (`curl -fsSL .../install.sh | bash`)
 and the only place that actually builds `~/.muster/` from scratch: it
-detects OS/arch, checks for Docker, Python 3.12+ (falling back to 3.11 with
-a warning), and git; fetches the source through a staged Git clone or local
-checkout copy; creates a dedicated Python venv and installs the backend into
-it; brings up Postgres and the frontend via `docker compose`,
-polling `pg_isready` rather than sleeping a fixed duration; runs the Alembic
-migration; installs and starts the platform-appropriate background service;
-and installs `musterctl` onto `PATH`.
+detects OS/arch and checks for Docker and git; fetches the source through a
+staged Git clone or local checkout copy; creates a dedicated Python venv and
+installs the backend into it; brings up Postgres and the frontend via
+`docker compose`, polling `pg_isready` rather than sleeping a fixed duration;
+runs the Alembic migration; installs and starts the platform-appropriate
+background service; and installs `musterctl` onto `PATH`.
+
+Python is self-contained at install time. A compatible host Python (3.11+) is
+used only to create `~/.muster/venv`; when the host Python is missing or too
+old, the installer bootstraps a pinned uv binary into `~/.muster/tools` and
+uses uv's managed Python 3.12 under `~/.muster/python`. The system Python is
+never upgraded or replaced.
 
 Source is copied or cloned into a staging directory and activated only after
 its required files are verified. This keeps the previous app tree intact when
