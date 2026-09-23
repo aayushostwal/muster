@@ -24,6 +24,12 @@ class CodexAdapter:
     backend = AgentBackend.codex
 
     @staticmethod
+    def _toml_inline_table(values: dict[str, str]) -> str:
+        return "{ " + ", ".join(
+            f"{json.dumps(key)} = {json.dumps(value)}" for key, value in values.items()
+        ) + " }"
+
+    @staticmethod
     def _prompt(task: Task, bindings: AdapterBindings, prompt: str) -> str:
         sections = []
         if bindings.selected_agent_prompt:
@@ -50,12 +56,27 @@ class CodexAdapter:
             flags += ["-c", f'model_reasoning_effort="{task.thinking_level}"']
         for name, config in bindings.mcp_servers.items():
             safe_name = name.replace("-", "_").replace(" ", "_")
+            if config.get("url"):
+                flags += ["-c", f'mcp_servers.{safe_name}.url={json.dumps(config["url"])}']
             if config.get("command"):
                 flags += ["-c", f'mcp_servers.{safe_name}.command={json.dumps(config["command"])}']
             if config.get("args"):
                 flags += ["-c", f'mcp_servers.{safe_name}.args={json.dumps(config["args"])}']
             if config.get("env"):
-                flags += ["-c", f'mcp_servers.{safe_name}.env={json.dumps(config["env"])}']
+                flags += [
+                    "-c",
+                    f'mcp_servers.{safe_name}.env={CodexAdapter._toml_inline_table(config["env"])}',
+                ]
+            if config.get("headers"):
+                flags += [
+                    "-c",
+                    f'mcp_servers.{safe_name}.http_headers={CodexAdapter._toml_inline_table(config["headers"])}',
+                ]
+            if config.get("bearer_token_env_var"):
+                flags += [
+                    "-c",
+                    f'mcp_servers.{safe_name}.bearer_token_env_var={json.dumps(config["bearer_token_env_var"])}',
+                ]
         return flags
 
     def build_command(

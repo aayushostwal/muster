@@ -3,13 +3,14 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     AgentBackend,
     AgentProfile,
+    CapabilityImport,
     DirectoryResource,
     GlobalMcpServer,
     Project,
@@ -54,6 +55,23 @@ async def _get_or_404(db: AsyncSession, model, resource_id: uuid.UUID, label: st
     if resource is None:
         raise HTTPException(status_code=404, detail=f"{label} not found")
     return resource
+
+
+async def _delete_capability_metadata(
+    db: AsyncSession, resource_type: str, resource_id: uuid.UUID
+) -> None:
+    await db.execute(
+        delete(CapabilityImport).where(
+            CapabilityImport.resource_type == resource_type,
+            CapabilityImport.resource_id == resource_id,
+        )
+    )
+    await db.execute(
+        delete(ProjectCapabilityOverride).where(
+            ProjectCapabilityOverride.resource_type == resource_type,
+            ProjectCapabilityOverride.resource_id == resource_id,
+        )
+    )
 
 
 @router.get("/directories")
@@ -113,6 +131,7 @@ async def update_global_mcp(resource_id: uuid.UUID, body: GlobalMcpUpdate, db: A
 @router.delete("/mcp-servers/{resource_id}", status_code=204)
 async def delete_global_mcp(resource_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     resource = await _get_or_404(db, GlobalMcpServer, resource_id, "MCP server")
+    await _delete_capability_metadata(db, "mcp", resource_id)
     await db.delete(resource)
     await db.commit()
 
@@ -141,6 +160,7 @@ async def update_agent(resource_id: uuid.UUID, body: AgentProfileUpdate, db: Asy
 @router.delete("/agents/{resource_id}", status_code=204)
 async def delete_agent(resource_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     resource = await _get_or_404(db, AgentProfile, resource_id, "Agent")
+    await _delete_capability_metadata(db, "agent", resource_id)
     await db.delete(resource)
     await db.commit()
 
@@ -169,6 +189,7 @@ async def update_skill(resource_id: uuid.UUID, body: SkillUpdate, db: AsyncSessi
 @router.delete("/skills/{resource_id}", status_code=204)
 async def delete_skill(resource_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     resource = await _get_or_404(db, Skill, resource_id, "Skill")
+    await _delete_capability_metadata(db, "skill", resource_id)
     await db.delete(resource)
     await db.commit()
 

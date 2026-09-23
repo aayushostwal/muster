@@ -31,16 +31,27 @@ class ClaudeCodeAdapter:
         """
         if not mcp_servers:
             return None
-        config = {
-            "mcpServers": {
-                name: {
+        servers: dict[str, dict] = {}
+        for name, cfg in mcp_servers.items():
+            transport = cfg.get("transport", "stdio")
+            if transport == "stdio":
+                servers[name] = {
                     "command": cfg.get("command"),
                     "args": cfg.get("args", []),
                     "env": cfg.get("env", {}),
                 }
-                for name, cfg in mcp_servers.items()
+                continue
+
+            headers = dict(cfg.get("headers") or {})
+            bearer_env = cfg.get("bearer_token_env_var")
+            if bearer_env and "Authorization" not in headers:
+                headers["Authorization"] = f"Bearer ${{{bearer_env}}}"
+            servers[name] = {
+                "type": "sse" if transport == "sse" else "http",
+                "url": cfg.get("url"),
+                "headers": headers,
             }
-        }
+        config = {"mcpServers": servers}
         fd = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", prefix="muster-mcp-", delete=False
         )

@@ -5,6 +5,11 @@ TypeScript, Tailwind CSS, Framer Motion, and TanStack Query. It provides the
 project dashboard, capability management, live task board, and streaming agent
 console.
 
+The global Agent, Skill, and MCP registry pages include an import workflow
+that scans the local user-level Claude Code and Codex environments through the
+native backend. It supports source/type filtering, redacted configuration
+previews, collision warnings, bulk selection, and idempotent re-sync.
+
 ## Local development
 
 ```bash

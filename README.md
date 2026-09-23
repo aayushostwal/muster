@@ -76,6 +76,9 @@ the Next.js development server on port 5173, run `make up` rather than
 - Manage directories, MCP connectors, agents, and skills once in global
   registries. Projects explicitly bind directories and can enable or disable
   every other capability without duplicating configuration.
+- Import user-level agents, skills, and MCP connectors from local Claude Code
+  and Codex environments. Imports are collision-safe snapshots with source
+  provenance and explicit re-sync; Muster never rewrites native CLI config.
 - Inspect every invocation's native Claude/Codex session id, API token usage,
   tool calls, diffs, reasoning, runtime logs, and delegated-agent activity.
 - Select an ordered model chain from the live local CLI catalog, tune thinking

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.api.routes import (
     artifacts,
+    capability_imports,
     cron,
     directories,
     mcp_servers,
@@ -39,6 +40,7 @@ app.add_middleware(
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(registry.router, prefix="/api")
+app.include_router(capability_imports.router, prefix="/api")
 app.include_router(directories.router, prefix="/api")
 app.include_router(mcp_servers.router, prefix="/api")
 app.include_router(tools.router, prefix="/api")

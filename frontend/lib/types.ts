@@ -70,9 +70,13 @@ export interface DirectoryBinding {
 }
 
 export interface McpConfig {
-  command: string;
+  transport?: "stdio" | "http" | "sse";
+  command?: string | null;
   args: string[];
   env: Record<string, string>;
+  url?: string | null;
+  headers?: Record<string, string>;
+  bearer_token_env_var?: string | null;
 }
 
 export interface McpBinding {
@@ -198,6 +202,38 @@ export interface ModelCatalog {
   expires_at: string;
   cached: boolean;
   discovery_error: string | null;
+}
+
+export type CapabilityImportKind = "agent" | "skill" | "mcp";
+export type CapabilityImportRuntime = "claude" | "codex";
+
+export interface CapabilityImportPreview {
+  candidate_id: string;
+  resource_type: CapabilityImportKind;
+  source_runtime: CapabilityImportRuntime;
+  source_scope: string;
+  source_locator: string;
+  name: string;
+  target_name: string;
+  description: string | null;
+  status: "new" | "updated" | "unchanged";
+  preview: Record<string, unknown>;
+  warnings: string[];
+}
+
+export interface CapabilityDiscovery {
+  items: CapabilityImportPreview[];
+  warnings: string[];
+}
+
+export interface CapabilityImportResult {
+  items: Array<{
+    import_id: string;
+    resource_type: CapabilityImportKind;
+    resource_id: string;
+    name: string;
+    action: "created" | "updated" | "unchanged";
+  }>;
 }
 
 export interface TaskInvocation {

@@ -10,15 +10,22 @@ directory.
 
 ## What it owns
 
-**Data model** (`app/db/models.py`) — eleven SQLAlchemy tables covering the
+**Data model** (`app/db/models.py`) — SQLAlchemy tables covering the
 full PRD: `Project` (with its directory/MCP/tool bindings, artifacts, cron
 jobs and secrets), `Task` (the unit of agent work, with a status lifecycle
 of `queued → running → waiting_on_you → done/failed/cancelled`), `Message`
 (the persistent per-task chat, tagged by sender), `ContextSnapshot`
 (compressed-history digests that sit alongside, never replacing, the raw
 transcript), and `TaskRunAttempt` (the failure/retry audit trail a "Retry
-now" button reads from). Schema is version-controlled through a single
-hand-written Alembic migration at `alembic/versions/0001_initial.py`.
+now" button reads from). Schema changes are version-controlled through the
+hand-written Alembic migrations in `alembic/versions/`.
+
+**Capability import** (`app/services/capability_imports.py`) — read-only
+discovery of user-level Claude Code and Codex agents, skills, and MCP servers.
+Selected resources are copied into Muster's global registry with provenance
+and a checksum, so a later scan can show whether a source changed and re-sync
+it explicitly. Discovery previews expose key names and counts but never MCP
+environment or header values. Native Claude/Codex files are never modified.
 
 **REST + WebSocket API** (`app/api/routes/`) — one router per resource
 (`projects`, `directories`, `mcp_servers`, `tools`, `artifacts`, `secrets`,

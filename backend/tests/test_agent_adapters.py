@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from app.services.agent_backends.base import ActivityEvent, AgentText, SessionId, UsageEvent
+from app.services.agent_backends.base import (
+    AdapterBindings,
+    ActivityEvent,
+    AgentText,
+    SessionId,
+    UsageEvent,
+)
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
 from app.services.agent_backends.codex import CodexAdapter
 
@@ -86,3 +93,49 @@ def test_claude_parses_text_tool_calls_and_usage():
     assert tool_result[0] == SessionId("claude-session")
     assert isinstance(tool_result[1], ActivityEvent)
     assert tool_result[1].kind == "tool_result"
+
+
+def test_claude_writes_stdio_and_remote_mcp_config():
+    adapter = ClaudeCodeAdapter()
+    path = adapter._write_mcp_config(
+        {
+            "local": {"command": "npx", "args": ["server"], "env": {"TOKEN": "value"}},
+            "remote": {
+                "transport": "http",
+                "url": "https://mcp.example.test",
+                "headers": {"X-Team": "platform"},
+                "bearer_token_env_var": "MCP_TOKEN",
+            },
+        }
+    )
+    assert path is not None
+    try:
+        config = json.loads(Path(path).read_text())
+    finally:
+        Path(path).unlink()
+    assert config["mcpServers"]["local"]["command"] == "npx"
+    remote = config["mcpServers"]["remote"]
+    assert remote["type"] == "http"
+    assert remote["headers"]["Authorization"] == "Bearer ${MCP_TOKEN}"
+
+
+def test_codex_renders_remote_mcp_flags_as_toml():
+    bindings = AdapterBindings(
+        directories=[],
+        mcp_servers={
+            "remote-api": {
+                "transport": "http",
+                "url": "https://mcp.example.test",
+                "headers": {"X-Team": "platform"},
+                "bearer_token_env_var": "MCP_TOKEN",
+            }
+        },
+        tool_names=[],
+        agent_profiles={},
+        skills={},
+    )
+    flags = CodexAdapter._capability_flags(type("TaskStub", (), {"thinking_level": None})(), bindings)
+    rendered = " ".join(flags)
+    assert 'mcp_servers.remote_api.url="https://mcp.example.test"' in rendered
+    assert 'http_headers={ "X-Team" = "platform" }' in rendered
+    assert 'bearer_token_env_var="MCP_TOKEN"' in rendered
