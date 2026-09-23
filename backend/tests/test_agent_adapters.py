@@ -119,6 +119,36 @@ def test_claude_writes_stdio_and_remote_mcp_config():
     assert remote["headers"]["Authorization"] == "Bearer ${MCP_TOKEN}"
 
 
+def test_claude_normalizes_imported_agent_tool_lists():
+    adapter = ClaudeCodeAdapter()
+    bindings = AdapterBindings(
+        directories=[],
+        mcp_servers={},
+        tool_names=[],
+        agent_profiles={
+            "reviewer": {
+                "description": "Reviews changes",
+                "prompt": "Review carefully.",
+                "tools": "Bash, Read, Grep",
+                "disallowedTools": "Write, Edit",
+            }
+        },
+        skills={},
+    )
+    task = type(
+        "TaskStub",
+        (),
+        {"model": None, "fallback_models": [], "thinking_level": None},
+    )()
+    project = type("ProjectStub", (), {"default_model": None})()
+
+    flags = adapter._base_flags(task, project, bindings, {})
+    profiles = json.loads(flags[flags.index("--agents") + 1])
+
+    assert profiles["reviewer"]["tools"] == ["Bash", "Read", "Grep"]
+    assert profiles["reviewer"]["disallowedTools"] == ["Write", "Edit"]
+
+
 def test_codex_renders_remote_mcp_flags_as_toml():
     bindings = AdapterBindings(
         directories=[],

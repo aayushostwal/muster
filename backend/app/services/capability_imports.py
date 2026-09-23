@@ -112,6 +112,15 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _agent_tool_list(value: Any) -> list[str]:
+    """Normalize Claude agent frontmatter's list or comma-separated tool syntax."""
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
 def _normalize_mcp(raw: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(raw, dict):
         return None, ["MCP configuration is not an object"]
@@ -249,7 +258,11 @@ def _markdown_agents(
             if thinking not in {"low", "medium", "high", "xhigh", "max"}:
                 thinking = "medium"
             portable_config = {
-                key: metadata[key]
+                key: (
+                    _agent_tool_list(metadata[key])
+                    if key in {"tools", "disallowedTools"}
+                    else metadata[key]
+                )
                 for key in ("tools", "disallowedTools", "permissionMode", "maxTurns")
                 if key in metadata
             }
