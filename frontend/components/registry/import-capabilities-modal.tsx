@@ -289,6 +289,7 @@ function CapabilityRow({
             <span className="rounded-md border border-white/[0.07] px-1.5 py-0.5 text-[0.58rem] uppercase tracking-wider text-slate-500">
               {item.source_runtime}
             </span>
+            {item.source_scope === "plugin" && <span className="rounded-md border border-pulse-400/15 bg-pulse-400/[0.055] px-1.5 py-0.5 text-[0.58rem] uppercase tracking-wider text-pulse-300">Plugin</span>}
             <span className={cn(
               "rounded-md px-1.5 py-0.5 text-[0.58rem]",
               item.status === "updated"

@@ -50,6 +50,14 @@ class DiscoveryResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class PluginRoot:
+    runtime: SourceRuntime
+    plugin_id: str
+    root: Path
+    version: str | None = None
+
+
 def _display_path(path: Path, home: Path) -> str:
     try:
         return f"~/{path.resolve().relative_to(home.resolve()).as_posix()}"
@@ -153,7 +161,14 @@ def _mcp_preview(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _skill_candidates(home: Path, runtime: SourceRuntime, root: Path) -> tuple[list[DiscoveredCapability], list[str]]:
+def _skill_candidates(
+    home: Path,
+    runtime: SourceRuntime,
+    root: Path,
+    *,
+    source_scope: str = "user",
+    origin_metadata: dict[str, Any] | None = None,
+) -> tuple[list[DiscoveredCapability], list[str]]:
     items: list[DiscoveredCapability] = []
     warnings: list[str] = []
     if not root.is_dir():
@@ -178,18 +193,28 @@ def _skill_candidates(home: Path, runtime: SourceRuntime, root: Path) -> tuple[l
                 item_warnings.append(
                     f"{len(support_files)} supporting file(s) are referenced by path and are not copied into the instruction snapshot"
                 )
+            preview = {
+                "instruction_characters": len(instructions),
+                "supporting_files": len(support_files),
+            }
+            if origin_metadata and origin_metadata.get("plugin"):
+                preview["plugin"] = origin_metadata["plugin"]
             items.append(
                 DiscoveredCapability(
                     resource_type="skill",
                     source_runtime=runtime,
-                    source_scope="user",
+                    source_scope=source_scope,
                     source_locator=locator,
                     name=name,
                     description=description,
                     payload={"name": name, "description": description, "instructions": instructions, "enabled": True},
-                    preview={"instruction_characters": len(instructions), "supporting_files": len(support_files)},
+                    preview=preview,
                     warnings=item_warnings,
-                    source_metadata={"manifest": locator, "supporting_files": len(support_files)},
+                    source_metadata={
+                        "manifest": locator,
+                        "supporting_files": len(support_files),
+                        **(origin_metadata or {}),
+                    },
                 )
             )
         except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
@@ -197,8 +222,14 @@ def _skill_candidates(home: Path, runtime: SourceRuntime, root: Path) -> tuple[l
     return items, warnings
 
 
-def _claude_agents(home: Path) -> tuple[list[DiscoveredCapability], list[str]]:
-    root = home / ".claude" / "agents"
+def _markdown_agents(
+    home: Path,
+    runtime: SourceRuntime,
+    root: Path,
+    *,
+    source_scope: str = "user",
+    origin_metadata: dict[str, Any] | None = None,
+) -> tuple[list[DiscoveredCapability], list[str]]:
     items: list[DiscoveredCapability] = []
     warnings: list[str] = []
     if not root.is_dir():
@@ -225,15 +256,15 @@ def _claude_agents(home: Path) -> tuple[list[DiscoveredCapability], list[str]]:
             items.append(
                 DiscoveredCapability(
                     resource_type="agent",
-                    source_runtime="claude",
-                    source_scope="user",
+                    source_runtime=runtime,
+                    source_scope=source_scope,
                     source_locator=locator,
                     name=name,
                     description=description,
                     payload={
                         "name": name,
                         "description": description,
-                        "backend": "claude_code",
+                        "backend": "claude_code" if runtime == "claude" else "codex",
                         "system_prompt": prompt,
                         "model": str(model) if model else None,
                         "thinking_level": thinking,
@@ -241,12 +272,12 @@ def _claude_agents(home: Path) -> tuple[list[DiscoveredCapability], list[str]]:
                         "enabled": True,
                     },
                     preview={
-                        "backend": "claude_code",
+                        "backend": "claude_code" if runtime == "claude" else "codex",
                         "model": model,
                         "thinking_level": thinking,
                         "configured_tools": metadata.get("tools") or [],
                     },
-                    source_metadata={"file": locator},
+                    source_metadata={"file": locator, **(origin_metadata or {})},
                 )
             )
         except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
@@ -358,6 +389,148 @@ def _mcp_candidates(
     return items, warnings
 
 
+def _claude_plugin_roots(home: Path) -> tuple[list[PluginRoot], list[str]]:
+    registry_path = home / ".claude" / "plugins" / "installed_plugins.json"
+    if not registry_path.is_file():
+        return [], []
+    try:
+        registry = _read_json(registry_path)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        return [], [f"Could not read {_display_path(registry_path, home)}: {exc}"]
+
+    plugins = registry.get("plugins")
+    if not isinstance(plugins, dict):
+        return [], [f"Could not read {_display_path(registry_path, home)}: plugins must be an object"]
+
+    roots: list[PluginRoot] = []
+    seen: set[Path] = set()
+    warnings: list[str] = []
+    for plugin_id, installs in sorted(plugins.items()):
+        if not isinstance(installs, list):
+            continue
+        user_installs = [
+            install
+            for install in installs
+            if isinstance(install, dict) and install.get("scope", "user") == "user"
+        ]
+        user_installs.sort(
+            key=lambda install: str(
+                install.get("lastUpdated") or install.get("installedAt") or ""
+            ),
+            reverse=True,
+        )
+        for install in user_installs[:1]:
+            raw_path = install.get("installPath")
+            if not raw_path:
+                continue
+            root = Path(str(raw_path))
+            if not root.is_absolute():
+                root = registry_path.parent / root
+            try:
+                resolved = root.resolve()
+            except OSError as exc:
+                warnings.append(f"Could not resolve Claude plugin {plugin_id}: {exc}")
+                continue
+            if resolved in seen:
+                continue
+            if not resolved.is_dir():
+                warnings.append(
+                    f"Claude plugin {plugin_id} is registered but {_display_path(root, home)} is unavailable"
+                )
+                continue
+            seen.add(resolved)
+            roots.append(
+                PluginRoot(
+                    runtime="claude",
+                    plugin_id=str(plugin_id),
+                    root=resolved,
+                    version=str(install["version"]) if install.get("version") else None,
+                )
+            )
+    return roots, warnings
+
+
+def _codex_plugin_roots(
+    home: Path, config: dict[str, Any]
+) -> tuple[list[PluginRoot], list[str]]:
+    configured = config.get("plugins")
+    if not isinstance(configured, dict):
+        return [], []
+
+    plugins_dir = home / ".codex" / "plugins"
+    cache_dir = plugins_dir / "cache"
+    roots: list[PluginRoot] = []
+    warnings: list[str] = []
+    seen: set[Path] = set()
+    for plugin_id, options in sorted(configured.items()):
+        enabled = options.get("enabled", True) if isinstance(options, dict) else options is not False
+        if not enabled:
+            continue
+        plugin_name = str(plugin_id).split("@", 1)[0]
+        if not plugin_name or Path(plugin_name).name != plugin_name:
+            warnings.append(f"Codex plugin identifier is invalid: {plugin_id}")
+            continue
+
+        direct_root = plugins_dir / plugin_name
+        candidates = [direct_root] if direct_root.is_dir() else []
+        if not candidates and cache_dir.is_dir():
+            candidates = [
+                path
+                for path in cache_dir.glob(f"*/{plugin_name}/*")
+                if path.is_dir()
+            ]
+            candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        if not candidates:
+            warnings.append(f"Codex plugin {plugin_id} is enabled but its installed package is unavailable")
+            continue
+
+        resolved = candidates[0].resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        roots.append(
+            PluginRoot(
+                runtime="codex",
+                plugin_id=str(plugin_id),
+                root=resolved,
+                version=resolved.name if resolved.parent.name == plugin_name else None,
+            )
+        )
+    return roots, warnings
+
+
+def _plugin_capabilities(
+    home: Path, roots: list[PluginRoot]
+) -> tuple[list[DiscoveredCapability], list[str]]:
+    items: list[DiscoveredCapability] = []
+    warnings: list[str] = []
+    for plugin in roots:
+        origin_metadata = {
+            "plugin": plugin.plugin_id,
+            "plugin_version": plugin.version,
+            "plugin_root": _display_path(plugin.root, home),
+        }
+        discovered, errors = _skill_candidates(
+            home,
+            plugin.runtime,
+            plugin.root / "skills",
+            source_scope="plugin",
+            origin_metadata=origin_metadata,
+        )
+        items.extend(discovered)
+        warnings.extend(errors)
+        discovered, errors = _markdown_agents(
+            home,
+            plugin.runtime,
+            plugin.root / "agents",
+            source_scope="plugin",
+            origin_metadata=origin_metadata,
+        )
+        items.extend(discovered)
+        warnings.extend(errors)
+    return items, warnings
+
+
 def discover_capabilities(home: Path | None = None) -> DiscoveryResult:
     home = (home or Path.home()).resolve()
     items: list[DiscoveredCapability] = []
@@ -371,7 +544,15 @@ def discover_capabilities(home: Path | None = None) -> DiscoveryResult:
         items.extend(discovered)
         warnings.extend(errors)
 
-    discovered, errors = _claude_agents(home)
+    discovered, errors = _markdown_agents(
+        home, "claude", home / ".claude" / "agents"
+    )
+    items.extend(discovered)
+    warnings.extend(errors)
+
+    claude_plugin_roots, errors = _claude_plugin_roots(home)
+    warnings.extend(errors)
+    discovered, errors = _plugin_capabilities(home, claude_plugin_roots)
     items.extend(discovered)
     warnings.extend(errors)
 
@@ -397,6 +578,12 @@ def discover_capabilities(home: Path | None = None) -> DiscoveryResult:
     items.extend(discovered)
     warnings.extend(errors)
     discovered, errors = _mcp_candidates(home, "codex", [(codex_path, codex_config)] if codex_config else [])
+    items.extend(discovered)
+    warnings.extend(errors)
+
+    codex_plugin_roots, errors = _codex_plugin_roots(home, codex_config)
+    warnings.extend(errors)
+    discovered, errors = _plugin_capabilities(home, codex_plugin_roots)
     items.extend(discovered)
     warnings.extend(errors)
 
