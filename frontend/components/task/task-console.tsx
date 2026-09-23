@@ -71,7 +71,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
-      <header className="surface flex min-h-14 shrink-0 items-center gap-2 rounded-xl px-2.5 py-2">
+      <header className="surface relative z-20 flex min-h-14 shrink-0 items-center gap-2 rounded-xl px-2.5 py-2">
         <Tooltip label="Back to board" side="bottom" align="start"><Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link></Tooltip>
         <div className="min-w-0 flex-1 px-1">
           <div className="flex min-w-0 items-center gap-1.5 text-[0.62rem] text-slate-600">
