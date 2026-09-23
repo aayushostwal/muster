@@ -344,7 +344,41 @@ ENV_STAGE=""
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# 4. Create venv + install backend deps
+# 4. Install musterctl before long-running setup
+# ---------------------------------------------------------------------------
+install_cli() {
+  local src="$APP_DIR/cli/musterctl" target_dir
+  [ -f "$src" ] || die "cli/musterctl not found at $src"
+  chmod +x "$src"
+
+  if [ -n "$BIN_DIR" ]; then
+    target_dir="$BIN_DIR"
+  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+    target_dir="/usr/local/bin"
+  elif [ ! -e /usr/local/bin ] && [ -d /usr/local ] && [ -w /usr/local ]; then
+    target_dir="/usr/local/bin"
+  else
+    target_dir="$HOME/.local/bin"
+  fi
+
+  mkdir -p "$target_dir"
+  cp "$src" "$target_dir/musterctl"
+  chmod +x "$target_dir/musterctl"
+  info "Installed musterctl to $target_dir/musterctl"
+
+  if [ "$target_dir" != "/usr/local/bin" ]; then
+    case ":$PATH:" in
+      *":$target_dir:"*) : ;;
+      *) warn "$target_dir is not on your PATH. Add this to your shell rc file:
+       export PATH=\"$target_dir:\$PATH\"" ;;
+    esac
+  fi
+}
+
+install_cli
+
+# ---------------------------------------------------------------------------
+# 5. Create venv + install backend deps
 # ---------------------------------------------------------------------------
 bootstrap_uv() {
   if [ -x "$UV_BIN" ]; then
@@ -389,7 +423,7 @@ info "Installing backend/requirements.txt into venv"
 "$VENV_DIR/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
 
 # ---------------------------------------------------------------------------
-# 5. Bring up postgres + frontend
+# 6. Bring up postgres + frontend
 # ---------------------------------------------------------------------------
 [ -f "$COMPOSE_FILE" ] || die "docker-compose.yml not found at $COMPOSE_FILE"
 
@@ -411,7 +445,7 @@ info "Starting postgres + frontend via docker compose"
 compose up -d --build postgres frontend
 
 # ---------------------------------------------------------------------------
-# 6. Wait for Postgres to be ready (poll, don't sleep a fixed time)
+# 7. Wait for Postgres to be ready (poll, don't sleep a fixed time)
 # ---------------------------------------------------------------------------
 wait_for_postgres() {
   local timeout="${MUSTER_PG_WAIT_TIMEOUT:-90}"
@@ -435,7 +469,7 @@ wait_for_postgres() {
 wait_for_postgres
 
 # ---------------------------------------------------------------------------
-# 7. Run migrations
+# 8. Run migrations
 # ---------------------------------------------------------------------------
 info "Running alembic upgrade head"
 # Settings (backend/app/config.py) is a pydantic-settings model with
@@ -456,7 +490,7 @@ info "Running alembic upgrade head"
 )
 
 # ---------------------------------------------------------------------------
-# 8. Install + start the backend service (launchd / systemd)
+# 9. Install + start the backend service (launchd / systemd)
 # ---------------------------------------------------------------------------
 render_service_template() {
   local kind="$1" template="$2" destination="$3"
@@ -549,40 +583,6 @@ install_service() {
 }
 
 install_service
-
-# ---------------------------------------------------------------------------
-# 9. Install musterctl on PATH
-# ---------------------------------------------------------------------------
-install_cli() {
-  local src="$APP_DIR/cli/musterctl" target_dir
-  [ -f "$src" ] || die "cli/musterctl not found at $src"
-  chmod +x "$src"
-
-  if [ -n "$BIN_DIR" ]; then
-    target_dir="$BIN_DIR"
-  elif [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-    target_dir="/usr/local/bin"
-  elif [ ! -e /usr/local/bin ] && [ -d /usr/local ] && [ -w /usr/local ]; then
-    target_dir="/usr/local/bin"
-  else
-    target_dir="$HOME/.local/bin"
-  fi
-
-  mkdir -p "$target_dir"
-  cp "$src" "$target_dir/musterctl"
-  chmod +x "$target_dir/musterctl"
-  info "Installed musterctl to $target_dir/musterctl"
-
-  if [ "$target_dir" != "/usr/local/bin" ]; then
-    case ":$PATH:" in
-      *":$target_dir:"*) : ;;
-      *) warn "$target_dir is not on your PATH. Add this to your shell rc file:
-       export PATH=\"$target_dir:\$PATH\"" ;;
-    esac
-  fi
-}
-
-install_cli
 
 # ---------------------------------------------------------------------------
 # 10. Summary

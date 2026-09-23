@@ -87,7 +87,7 @@ PIP
 #!/usr/bin/env bash
 if [ "${1:-}" = "-m" ] && [ "${2:-}" = "alembic" ]; then
   printf 'alembic|%s\n' "$*" >> "$CALL_LOG"
-  exit 0
+  exit "${FAKE_ALEMBIC_EXIT:-0}"
 fi
 if [ "${1:-}" = "-c" ] && [[ "${2:-}" == *"sys.version_info"* ]]; then
   exit 0
@@ -152,12 +152,14 @@ PY
 run_install() {
   local os="$1" home="$2" backend_port="$3" frontend_port="$4" postgres_port="$5" password="$6"
   local python_version="${7:-}"
+  local alembic_exit="${8:-0}"
   mkdir -p "$home"
   env \
     HOME="$home" \
     PATH="$FAKE_BIN:$PATH" \
     FAKE_UNAME_S="$os" \
     FAKE_PYTHON_VERSION="$python_version" \
+    FAKE_ALEMBIC_EXIT="$alembic_exit" \
     MUSTER_HOME="$home/.muster" \
     MUSTER_SOURCE_DIR="$REPO_ROOT" \
     MUSTER_BIN_DIR="$home/bin" \
@@ -222,6 +224,17 @@ if grep -E '__[A-Z0-9_]+__' "$UNIT" >/dev/null; then
 fi
 assert_contains "$CALL_LOG" "systemctl|--user enable --now muster.service"
 assert_contains "$CALL_LOG" "docker|pg=56432|frontend=3200|api=http://localhost:8282|"
+
+# The recovery CLI must be available even when a later installation step
+# fails, so users can rerun install or inspect status without finding a shell
+# script inside the application checkout.
+FAILED_HOME="$TEST_ROOT/failed install home"
+if run_install Darwin "$FAILED_HOME" 8484 3400 58432 "failed-password" "" 42; then
+  printf 'Expected a simulated migration failure\n' >&2
+  exit 1
+fi
+assert_file "$FAILED_HOME/bin/musterctl"
+[ ! -e "$FAILED_HOME/Library/LaunchAgents/com.muster.backend.plist" ]
 
 # A host with only Apple's Python 3.9 must get an isolated managed runtime
 # instead of being told to replace or upgrade the system Python.
