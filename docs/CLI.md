@@ -12,6 +12,9 @@ instead; those Make targets are not part of `musterctl`.
 
 The production-style installer installs `musterctl` into `/usr/local/bin` when
 that directory is writable, otherwise into `~/.local/bin`.
+It also creates an isolated backend venv. If Python 3.11+ is unavailable, the
+installer provisions its own managed Python 3.12 under `~/.muster` instead of
+modifying the system Python.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh | bash

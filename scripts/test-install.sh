@@ -7,6 +7,7 @@ unset MUSTER_HOME MUSTER_SOURCE_DIR MUSTER_BIN_DIR MUSTER_REPO_URL MUSTER_REPO_R
 unset MUSTER_POSTGRES_HOST MUSTER_POSTGRES_PORT MUSTER_POSTGRES_USER
 unset MUSTER_POSTGRES_PASSWORD MUSTER_POSTGRES_DB MUSTER_BACKEND_PORT
 unset MUSTER_FRONTEND_PORT MUSTER_PG_WAIT_TIMEOUT MUSTER_API_URL
+unset MUSTER_PYTHON_VERSION MUSTER_UV_VERSION
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/muster-install-test.XXXXXX")"
@@ -68,10 +69,14 @@ EOF
 cat > "$FAKE_BIN/python3" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-c" ]; then
+  if [ -n "${FAKE_PYTHON_VERSION:-}" ]; then
+    printf '%s\n' "$FAKE_PYTHON_VERSION"
+    exit 0
+  fi
   exec "$REAL_PYTHON" "$@"
 fi
 if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
-  destination="$3"
+  destination="${*: -1}"
   mkdir -p "$destination/bin"
   cat > "$destination/bin/pip" <<'PIP'
 #!/usr/bin/env bash
@@ -84,12 +89,38 @@ if [ "${1:-}" = "-m" ] && [ "${2:-}" = "alembic" ]; then
   printf 'alembic|%s\n' "$*" >> "$CALL_LOG"
   exit 0
 fi
+if [ "${1:-}" = "-c" ] && [[ "${2:-}" == *"sys.version_info"* ]]; then
+  exit 0
+fi
 exec "$REAL_PYTHON" "$@"
 PYTHON
   chmod +x "$destination/bin/pip" "$destination/bin/python"
   exit 0
 fi
 exec "$REAL_PYTHON" "$@"
+EOF
+
+cat > "$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl|%s\n' "$*" >> "$CALL_LOG"
+cat <<'INSTALLER'
+#!/usr/bin/env sh
+set -eu
+mkdir -p "$UV_UNMANAGED_INSTALL"
+cat > "$UV_UNMANAGED_INSTALL/uv" <<'UV'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'uv|python_dir=%s|%s\n' "${UV_PYTHON_INSTALL_DIR:-}" "$*" >> "$CALL_LOG"
+if [ "${1:-}" = "venv" ]; then
+  destination="${*: -1}"
+  mkdir -p "${UV_PYTHON_INSTALL_DIR:?}"
+  python3 -m venv "$destination"
+  exit 0
+fi
+exit 1
+UV
+chmod +x "$UV_UNMANAGED_INSTALL/uv"
+INSTALLER
 EOF
 
 chmod +x "$FAKE_BIN"/*
@@ -120,11 +151,13 @@ PY
 
 run_install() {
   local os="$1" home="$2" backend_port="$3" frontend_port="$4" postgres_port="$5" password="$6"
+  local python_version="${7:-}"
   mkdir -p "$home"
   env \
     HOME="$home" \
     PATH="$FAKE_BIN:$PATH" \
     FAKE_UNAME_S="$os" \
+    FAKE_PYTHON_VERSION="$python_version" \
     MUSTER_HOME="$home/.muster" \
     MUSTER_SOURCE_DIR="$REPO_ROOT" \
     MUSTER_BIN_DIR="$home/bin" \
@@ -189,5 +222,15 @@ if grep -E '__[A-Z0-9_]+__' "$UNIT" >/dev/null; then
 fi
 assert_contains "$CALL_LOG" "systemctl|--user enable --now muster.service"
 assert_contains "$CALL_LOG" "docker|pg=56432|frontend=3200|api=http://localhost:8282|"
+
+# A host with only Apple's Python 3.9 must get an isolated managed runtime
+# instead of being told to replace or upgrade the system Python.
+rm "$FAKE_BIN/python3.12"
+LEGACY_PYTHON_HOME="$TEST_ROOT/legacy python home"
+run_install Darwin "$LEGACY_PYTHON_HOME" 8383 3300 57432 "legacy-password" 3.9
+assert_file "$LEGACY_PYTHON_HOME/.muster/tools/uv"
+assert_file "$LEGACY_PYTHON_HOME/.muster/venv/bin/python"
+assert_contains "$CALL_LOG" "curl|-LsSf https://astral.sh/uv/0.12.17/install.sh"
+assert_contains "$CALL_LOG" "uv|python_dir=$LEGACY_PYTHON_HOME/.muster/python|venv --clear --seed --managed-python --python 3.12 $LEGACY_PYTHON_HOME/.muster/venv"
 
 printf 'installer smoke tests passed\n'
