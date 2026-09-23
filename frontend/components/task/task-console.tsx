@@ -1,12 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   ArrowLeft,
-  Bot,
   BrainCircuit,
-  CircleAlert,
   CircleStop,
   Clock3,
   FileText,
@@ -17,21 +15,20 @@ import {
   Send,
   Settings2,
   Sparkles,
-  User,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect, Select } from "@/components/ui/select";
 import { ErrorState, Skeleton } from "@/components/ui/states";
 import { Tooltip } from "@/components/ui/tooltip";
-import { MarkdownContent } from "@/components/ui/markdown-content";
 import { useToast } from "@/components/ui/toast";
 import { ActivityFeed, AgentActivity } from "@/components/task/activity-panels";
+import { TerminalFrame, TerminalThread } from "@/components/task/terminal-thread";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { api } from "@/lib/api";
 import type { ListResponse, Message, Task, TaskInvocation, TaskStatus } from "@/lib/types";
@@ -56,7 +53,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const { connection, tokenUsage } = useTaskStream(taskId);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
-  const [view, setView] = useState<"chat" | "activity" | "agents">("chat");
+  const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
   const action = useMutation({ mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name), onSuccess: (updated) => { queryClient.setQueryData(["task", taskId], updated); toast("Task state updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
 
@@ -67,7 +64,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-var(--header-height))] max-w-[92rem] flex-col px-4 py-4 md:px-6">
+    <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[92rem] flex-col overflow-hidden px-4 py-4 md:px-6">
       <header className="surface flex flex-col justify-between gap-4 rounded-panel px-4 py-4 lg:flex-row lg:items-center lg:px-5">
         <div className="flex min-w-0 items-center gap-3">
           <Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link>
@@ -85,12 +82,12 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       {retrying && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-amber-400/15 bg-amber-400/[0.045] px-4 py-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-amber-400" /><p className="text-xs text-amber-100/70">Transient failure detected. Automatic retry scheduled in {latestAttempt.backoff_seconds} seconds.</p></div><Button size="sm" variant="ghost" onClick={() => action.mutate("retry-now")}>Retry now</Button></motion.div>}
 
       <div className="mt-4 grid min-h-0 flex-1 justify-center gap-4 xl:grid-cols-[minmax(0,52rem)_16rem]">
-        <section className="surface flex min-h-[36rem] flex-col overflow-hidden rounded-panel">
-          <div className="flex flex-col justify-between gap-3 border-b border-white/[0.07] px-3 py-3 sm:flex-row sm:items-center"><div className="flex rounded-lg border border-white/[0.06] bg-black/15 p-1">{(["chat", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600 hover:text-slate-300")}>{item}{item === "activity" && events.data?.items.length ? <span className="ml-1.5 font-mono text-[0.55rem] text-slate-600">{events.data.items.length}</span> : null}</button>)}</div><div className={cn("flex items-center gap-1.5 px-1 text-[0.62rem]", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}{connection === "live" ? "Live" : connection === "connecting" ? "Connecting" : "Reconnecting"}</div></div>
-          <div className="min-h-0 flex-1 overflow-hidden">{view === "chat" && <MessageThread task={current} messages={messages.data?.items ?? []} loading={messages.isPending} />}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
-          {view === "chat" && <Composer taskId={taskId} status={current.status} />}
+        <section className="surface flex min-h-0 flex-col overflow-hidden rounded-panel">
+          <div className="flex flex-col justify-between gap-3 border-b border-white/[0.07] px-3 py-3 sm:flex-row sm:items-center"><div className="flex rounded-lg border border-white/[0.06] bg-black/15 p-1">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600 hover:text-slate-300")}>{item}{item === "activity" && events.data?.items.length ? <span className="ml-1.5 font-mono text-[0.55rem] text-slate-600">{events.data.items.length}</span> : null}</button>)}</div><div className={cn("flex items-center gap-1.5 px-1 text-[0.62rem]", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}{connection === "live" ? "Live" : connection === "connecting" ? "Connecting" : "Reconnecting"}</div></div>
+          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} loading={messages.isPending} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
+          {view === "terminal" && <Composer taskId={taskId} status={current.status} />}
         </section>
-        <aside className="space-y-3">
+        <aside className="max-h-full space-y-3 overflow-y-auto pb-1">
           <TelemetryCard tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
           <div className="surface rounded-panel p-4"><div className="flex items-center gap-2 text-xs font-medium text-slate-300"><History className="h-4 w-4 text-pulse-400" /> Run history</div>{attempts.data?.items.length ? <div className="mt-4 space-y-3">{attempts.data.items.slice(-4).reverse().map((attempt) => <div key={attempt.id} className="border-l border-white/10 pl-3"><div className="flex items-center justify-between"><span className="font-mono text-[0.64rem] text-slate-400">Attempt {attempt.attempt_number}</span><span className={cn("text-[0.58rem] uppercase tracking-wider", attempt.failure_class === "transient" ? "text-amber-400" : "text-red-400")}>{attempt.failure_class || "started"}</span></div><p className="mt-1 line-clamp-2 text-[0.65rem] leading-4 text-slate-600">{attempt.error_message || "Agent process started"}</p></div>)}</div> : <p className="mt-4 text-[0.68rem] leading-5 text-slate-600">No failures or retries recorded for this task.</p>}</div>
           <div className="surface rounded-panel p-4"><p className="text-[0.62rem] font-semibold uppercase tracking-wider text-slate-600">Project</p><p className="mt-2 truncate text-sm font-medium text-slate-200">{project.data?.name ?? "Loading project"}</p><p className="mt-1 text-[0.65rem] text-slate-600">Created {formatDateTime(current.created_at)}</p></div>
@@ -100,32 +97,6 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
     </div>
   );
-}
-
-function MessageThread({ task, messages, loading }: { task: Task; messages: Message[]; loading: boolean }) {
-  const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
-  if (loading) return <div className="flex-1 space-y-4 p-5"><Skeleton className="h-20" /><Skeleton className="ml-auto h-16 w-2/3" /><Skeleton className="h-28" /></div>;
-  return (
-    <div className="h-full overflow-y-auto px-4 py-5 md:px-6" aria-live="polite">
-      <div className="mx-auto max-w-3xl space-y-4">
-        <div className="rounded-xl border border-pulse-400/10 bg-pulse-400/[0.035] p-4"><div className="flex items-center gap-2 text-[0.66rem] font-semibold uppercase tracking-wider text-pulse-400"><Sparkles className="h-3.5 w-3.5" /> Initial brief</div><MarkdownContent content={task.initial_prompt} className="mt-2" /></div>
-        <AnimatePresence initial={false}>
-          {messages.map((message) => <MessageBubble key={message.id} message={message} backend={task.backend} />)}
-        </AnimatePresence>
-        {task.status === "running" && <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 pl-11 text-[0.68rem] text-slate-600"><span className="flex gap-1"><i className="h-1 w-1 animate-bounce rounded-full bg-signal-400 [animation-delay:-0.2s]" /><i className="h-1 w-1 animate-bounce rounded-full bg-signal-400 [animation-delay:-0.1s]" /><i className="h-1 w-1 animate-bounce rounded-full bg-signal-400" /></span>Agent is working</motion.div>}
-        <div ref={endRef} />
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({ message, backend }: { message: Message; backend: Task["backend"] }) {
-  if (message.sender === "system") return <motion.div layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start gap-2 rounded-xl border border-amber-400/10 bg-amber-400/[0.025] px-3 py-2.5 text-[0.68rem] leading-5 text-amber-100/55"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" /><span className="whitespace-pre-wrap">{message.content_text}</span></motion.div>;
-  const user = message.sender === "user";
-  return <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: message.optimistic ? 0.6 : 1, y: 0 }} className={cn("flex items-start gap-3", user && "flex-row-reverse")}><div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border", user ? "border-pulse-400/20 bg-pulse-400/10 text-pulse-400" : "border-signal-400/20 bg-signal-400/10 text-signal-400")}>{user ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}</div><div className={cn("max-w-[82%] rounded-2xl border px-4 py-3", user ? "rounded-tr-sm border-pulse-400/15 bg-pulse-400/[0.07]" : message.is_blocking_question ? "rounded-tl-sm border-amber-400/20 bg-amber-400/[0.055]" : "rounded-tl-sm border-white/[0.07] bg-white/[0.025]")}>{!user && <p className="mb-1.5 text-[0.56rem] font-semibold uppercase tracking-wider text-signal-400/70">{backendLabel(backend)} response</p>}<MarkdownContent content={message.content_text ?? ""} /><p className="mt-2 font-mono text-[0.56rem] text-slate-700">{formatDateTime(message.created_at)}</p></div></motion.div>;
 }
 
 function Composer({ taskId, status }: { taskId: string; status: TaskStatus }) {
