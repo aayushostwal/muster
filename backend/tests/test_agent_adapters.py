@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from app.services.agent_backends.base import (
@@ -13,6 +14,7 @@ from app.services.agent_backends.base import (
 )
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
 from app.services.agent_backends.codex import CodexAdapter
+from app.services.agent_backends.codex import create_codex_home_overlay
 
 
 def test_codex_parses_session_activity_and_usage():
@@ -42,6 +44,23 @@ def test_codex_parses_session_activity_and_usage():
     )
     assert isinstance(result, list)
     assert result[0] == UsageEvent(input_tokens=12, output_tokens=7, cached_tokens=3)
+
+    denied_command = adapter.parse_line(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item-2",
+                    "type": "command_execution",
+                    "status": "failed",
+                    "command": "git push",
+                    "output": "This command requires approval",
+                },
+            }
+        )
+    )
+    assert isinstance(denied_command, ActivityEvent)
+    assert denied_command.metadata["is_error"] is True
 
 
 def test_claude_parses_text_tool_calls_and_usage():
@@ -122,9 +141,10 @@ def test_claude_writes_stdio_and_remote_mcp_config():
 def test_claude_normalizes_imported_agent_tool_lists():
     adapter = ClaudeCodeAdapter()
     bindings = AdapterBindings(
+        primary_directory=None,
         directories=[],
         mcp_servers={},
-        tool_names=[],
+        tool_rules=[],
         agent_profiles={
             "reviewer": {
                 "description": "Reviews changes",
@@ -151,6 +171,7 @@ def test_claude_normalizes_imported_agent_tool_lists():
 
 def test_codex_renders_remote_mcp_flags_as_toml():
     bindings = AdapterBindings(
+        primary_directory=None,
         directories=[],
         mcp_servers={
             "remote-api": {
@@ -160,7 +181,7 @@ def test_codex_renders_remote_mcp_flags_as_toml():
                 "bearer_token_env_var": "MCP_TOKEN",
             }
         },
-        tool_names=[],
+        tool_rules=[],
         agent_profiles={},
         skills={},
     )
@@ -169,3 +190,71 @@ def test_codex_renders_remote_mcp_flags_as_toml():
     assert 'mcp_servers.remote_api.url="https://mcp.example.test"' in rendered
     assert 'http_headers={ "X-Team" = "platform" }' in rendered
     assert 'bearer_token_env_var="MCP_TOKEN"' in rendered
+
+
+def test_claude_applies_project_tool_permissions():
+    bindings = AdapterBindings(
+        primary_directory="/workspace/repo",
+        directories=["/workspace/repo", "/workspace/shared"],
+        mcp_servers={},
+        tool_rules=[
+            {"backend": "claude_code", "decision": "allow", "claude_pattern": "Bash(git *)", "codex_prefix": []},
+            {"backend": "claude_code", "decision": "deny", "claude_pattern": "WebFetch", "codex_prefix": []},
+        ],
+        agent_profiles={},
+        skills={},
+    )
+    task = type("TaskStub", (), {"model": None, "fallback_models": [], "thinking_level": None})()
+    project = type("ProjectStub", (), {"default_model": None})()
+
+    flags = ClaudeCodeAdapter()._base_flags(task, project, bindings, {})
+
+    assert flags[flags.index("--permission-prompts") + 1] == "none"
+    assert flags[flags.index("--allowedTools") + 1] == "Bash(git *)"
+    assert flags[flags.index("--disallowedTools") + 1] == "WebFetch"
+    assert flags.count("--add-dir") == 2
+
+
+def test_codex_uses_primary_directory_and_additional_roots():
+    bindings = AdapterBindings(
+        primary_directory="/workspace/repo",
+        directories=["/workspace/repo", "/workspace/shared"],
+        mcp_servers={},
+        tool_rules=[],
+        agent_profiles={},
+        skills={},
+    )
+    task = type("TaskStub", (), {"initial_prompt": "Fix it", "model": None, "thinking_level": None})()
+    project = type("ProjectStub", (), {"default_model": None})()
+
+    command = CodexAdapter().build_command(task, project, bindings, {})
+    resumed = CodexAdapter().resume_command(task, project, bindings, {}, "session-id", "Continue")
+
+    assert command[command.index("--cd") + 1] == "/workspace/repo"
+    assert command[command.index("--add-dir") + 1] == "/workspace/shared"
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert "--cd" not in resumed
+    assert "--add-dir" not in resumed
+    assert "--sandbox" not in resumed
+
+
+def test_codex_home_overlay_layers_project_rules(monkeypatch, tmp_path):
+    source_home = tmp_path / "codex"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text("{}")
+    source_rules = source_home / "rules"
+    source_rules.mkdir()
+    (source_rules / "default.rules").write_text(
+        'prefix_rule(pattern=["git", "status"], decision="allow")\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    overlay = create_codex_home_overlay([
+        {"backend": "codex", "decision": "allow", "codex_prefix": ["git", "push"]},
+    ])
+
+    assert overlay is not None
+    assert (overlay / "auth.json").is_symlink()
+    assert 'pattern=["git", "push"]' in (overlay / "rules" / "muster.rules").read_text()
+    assert (overlay / "rules" / "user-default.rules").is_symlink()
+    shutil.rmtree(overlay)

@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Send,
   Settings2,
+  ShieldAlert,
   Sparkles,
   TerminalSquare,
   Wifi,
@@ -35,7 +36,7 @@ import { TaskTokenHud } from "@/components/task/task-token-hud";
 import { TerminalFrame, TerminalThread } from "@/components/task/terminal-thread";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { api } from "@/lib/api";
-import type { ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus } from "@/lib/types";
+import type { ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus, ToolApproval } from "@/lib/types";
 import { backendLabel, cn, formatDateTime, shortId } from "@/lib/utils";
 
 const statusMeta: Record<TaskStatus, { label: string; color: string }> = {
@@ -53,6 +54,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const attempts = useQuery({ queryKey: ["attempts", taskId], queryFn: () => api.attempts(taskId) });
   const events = useQuery({ queryKey: ["task-events", taskId], queryFn: () => api.taskEvents(taskId) });
   const invocations = useQuery({ queryKey: ["invocations", taskId], queryFn: () => api.invocations(taskId) });
+  const approvals = useQuery({ queryKey: ["tool-approvals", taskId], queryFn: () => api.toolApprovals(taskId) });
   const project = useQuery({ queryKey: ["project", task.data?.project_id], queryFn: () => api.project(task.data!.project_id), enabled: Boolean(task.data?.project_id) });
   const { connection, tokenUsage } = useTaskStream(taskId);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -68,6 +70,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const current = task.data;
   const latestAttempt = attempts.data?.items.at(-1);
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
+  const pendingApproval = approvals.data?.items.find((approval) => approval.status === "pending");
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
@@ -107,6 +110,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       </header>
 
       {retrying && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-amber-400/15 bg-amber-400/[0.045] px-4 py-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-amber-400" /><p className="text-xs text-amber-100/70">Transient failure detected. Automatic retry scheduled in {latestAttempt.backoff_seconds} seconds.</p></div><Button size="sm" variant="ghost" onClick={() => action.mutate("retry-now")}>Retry now</Button></motion.div>}
+      {pendingApproval && <ToolApprovalBar approval={pendingApproval} />}
 
       <div className="mt-2 min-h-0 flex-1">
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
@@ -121,6 +125,23 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
     </div>
   );
+}
+
+function ToolApprovalBar({ approval }: { approval: ToolApproval }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const resolve = useMutation({
+    mutationFn: (decision: "approve_once" | "always_allow" | "deny") => api.resolveToolApproval(approval.task_id, approval.id, decision),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ListResponse<ToolApproval>>(["tool-approvals", approval.task_id], (current) => ({ items: (current?.items ?? []).map((item) => item.id === updated.id ? updated : item) }));
+      queryClient.invalidateQueries({ queryKey: ["task", approval.task_id] });
+      queryClient.invalidateQueries({ queryKey: ["messages", approval.task_id] });
+      toast(updated.status === "denied" ? "Tool request denied" : "Tool request approved", updated.status === "denied" ? "error" : "success");
+    },
+    onError: (error: Error) => toast(error.message, "error"),
+  });
+  const command = typeof approval.tool_input.command === "string" ? approval.tool_input.command : JSON.stringify(approval.tool_input);
+  return <motion.section initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-2 flex flex-col gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.05] px-3 py-3 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-amber-400/20 bg-amber-400/[0.07] text-amber-400"><ShieldAlert className="h-4 w-4" /></span><div className="min-w-0"><p className="text-xs font-medium text-amber-100">{approval.tool_name} needs permission</p><p className="mt-1 truncate font-mono text-[0.62rem] text-amber-100/50" title={command}>{command || approval.reason || "Runtime permission escalation"}</p></div></div><div className="flex shrink-0 gap-1.5"><Button size="sm" variant="ghost" loading={resolve.isPending} onClick={() => resolve.mutate("deny")}>Deny</Button><Button size="sm" loading={resolve.isPending} onClick={() => resolve.mutate("approve_once")}>Allow once</Button><Button size="sm" variant="primary" loading={resolve.isPending} onClick={() => resolve.mutate("always_allow")}>Always allow</Button></div></motion.section>;
 }
 
 function Composer({ taskId, status }: { taskId: string; status: TaskStatus }) {

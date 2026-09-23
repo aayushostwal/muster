@@ -10,10 +10,10 @@ from app.services.agent_backends.base import (
     AdapterBindings,
     ActivityEvent,
     AgentText,
-    BlockingQuestion,
     Done,
     ErrorEvent,
     ParsedEvent,
+    PermissionRequest,
     SessionId,
     UsageEvent,
 )
@@ -95,11 +95,32 @@ class ClaudeCodeAdapter:
             "--verbose",
             "--permission-mode",
             "acceptEdits",
+            "--permission-prompts",
+            "none",
             "--include-hook-events",
             "--forward-subagent-text",
         ]
         for directory in bindings.directories:
             flags += ["--add-dir", directory]
+
+        allowed_tools = [
+            rule["claude_pattern"]
+            for rule in bindings.tool_rules
+            if rule.get("decision") == "allow"
+            and rule.get("backend") in {"all", "claude_code"}
+            and rule.get("claude_pattern")
+        ]
+        denied_tools = [
+            rule["claude_pattern"]
+            for rule in bindings.tool_rules
+            if rule.get("decision") == "deny"
+            and rule.get("backend") in {"all", "claude_code"}
+            and rule.get("claude_pattern")
+        ]
+        if allowed_tools:
+            flags += ["--allowedTools", ",".join(allowed_tools)]
+        if denied_tools:
+            flags += ["--disallowedTools", ",".join(denied_tools)]
 
         mcp_config_path = self._write_mcp_config(bindings.mcp_servers)
         if mcp_config_path:
@@ -224,12 +245,20 @@ class ClaudeCodeAdapter:
 
         if event_type in ("permission_denial", "permission_request"):
             text = event.get("message") or event.get("reason") or json.dumps(event)
-            return BlockingQuestion(text=text)
+            return PermissionRequest(
+                tool_name=str(event.get("tool_name") or event.get("tool") or "Tool"),
+                tool_input=event.get("input") if isinstance(event.get("input"), dict) else {},
+                reason=text,
+            )
 
         # A tool_use block requiring approval, surfaced inline in an assistant
         # message without full `--permission-mode acceptEdits` coverage.
         if event_type == "tool_use" and event.get("requires_approval"):
-            return BlockingQuestion(text=event.get("message") or json.dumps(event))
+            return PermissionRequest(
+                tool_name=str(event.get("name") or "Tool"),
+                tool_input=event.get("input") if isinstance(event.get("input"), dict) else {},
+                reason=event.get("message") or json.dumps(event),
+            )
 
         if session_id:
             return SessionId(session_id=session_id)

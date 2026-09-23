@@ -15,6 +15,7 @@ class ProjectCreate(BaseModel):
     default_backend: AgentBackend
     default_model: str | None = None
     default_context_strategy: str = "full"
+    primary_directory_id: uuid.UUID | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -23,6 +24,7 @@ class ProjectUpdate(BaseModel):
     default_backend: AgentBackend | None = None
     default_model: str | None = None
     default_context_strategy: str | None = None
+    primary_directory_id: uuid.UUID | None = None
 
 
 class ProjectRead(BaseModel):
@@ -34,5 +36,6 @@ class ProjectRead(BaseModel):
     default_backend: AgentBackend
     default_model: str | None
     default_context_strategy: str
+    primary_directory_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime

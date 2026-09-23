@@ -68,6 +68,9 @@ class Project(Base):
     )
     default_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_context_strategy: Mapped[str] = mapped_column(String(50), default="full")
+    primary_directory_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("directory_resources.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -92,6 +95,9 @@ class Project(Base):
     secrets: Mapped[list["Secret"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     capability_overrides: Mapped[list["ProjectCapabilityOverride"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
+    )
+    primary_directory: Mapped["DirectoryResource | None"] = relationship(
+        foreign_keys=[primary_directory_id]
     )
 
 
@@ -195,6 +201,9 @@ class Task(Base):
     )
     events: Mapped[list["TaskEvent"]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="TaskEvent.created_at"
+    )
+    tool_approval_requests: Mapped[list["ToolApprovalRequest"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="ToolApprovalRequest.created_at"
     )
 
 
@@ -352,6 +361,29 @@ class TaskEvent(Base):
     )
 
     task: Mapped[Task] = relationship(back_populates="events")
+
+
+class ToolApprovalRequest(Base):
+    """A backend tool call waiting for an explicit user decision."""
+
+    __tablename__ = "tool_approval_requests"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    invocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("task_invocations.id", ondelete="SET NULL"), nullable=True
+    )
+    backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    tool_input: Mapped[dict] = mapped_column(JSON, default=dict)
+    permission_rule: Mapped[dict] = mapped_column(JSON, default=dict)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    resolution_scope: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped[Task] = relationship(back_populates="tool_approval_requests")
 
 
 class Message(Base):

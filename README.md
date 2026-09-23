@@ -79,6 +79,12 @@ the Next.js development server on port 5173, run `make up` rather than
 - Manage directories, MCP connectors, agents, and skills once in global
   registries. Projects explicitly bind directories and can enable or disable
   every other capability without duplicating configuration.
+- Choose one read/write directory as each Project's working root. Claude Code
+  and Codex start there, while every other granted directory is attached as an
+  additional workspace.
+- Define allow/deny tool rules per Project. Uncovered tool calls pause the Task
+  and surface inline **Allow once**, **Always allow**, and **Deny** controls;
+  persistent approvals apply to every granted directory in that Project.
 - Import user-level agents, skills, and MCP connectors from local Claude Code
   and Codex environments. Imports are collision-safe snapshots with source
   provenance and explicit re-sync; Muster never rewrites native CLI config.
@@ -117,6 +123,7 @@ the Next.js development server on port 5173, run `make up` rather than
 | **Task event** | A structured, collapsible tool call, diff, reasoning block, runtime log, or delegated-agent event. |
 | **Artifact** | A named binding inside a Project, e.g. a GitHub repo tied to a local path and optionally a remote service URL. |
 | **Directory binding** | A project-scoped read or read-write grant to a globally registered filesystem root. |
+| **Tool permission** | A project-scoped Claude tool pattern and/or Codex command-prefix rule, with inline one-time approval for uncovered calls. |
 | **Cron Job** | A scheduled Task template: a cron expression plus the prompt/backend/model to run, still surfaced on the same Task board. |
 | **Context Snapshot** | A compressed summary of a Task's chat history, stored alongside — never in place of — the full raw transcript. |
 

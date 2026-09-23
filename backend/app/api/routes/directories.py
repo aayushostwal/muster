@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import DirectoryBinding, DirectoryResource, Project
+from app.db.models import AccessScope, DirectoryBinding, DirectoryResource, Project
 from app.db.session import get_db
 from app.schemas.directory import DirectoryBindingCreate, DirectoryBindingRead
 
@@ -52,7 +52,7 @@ async def list_directories(project_id: uuid.UUID, db: AsyncSession = Depends(get
 async def create_directory(
     project_id: uuid.UUID, body: DirectoryBindingCreate, db: AsyncSession = Depends(get_db)
 ):
-    await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id)
     directory = await db.get(DirectoryResource, body.directory_id)
     if directory is None:
         raise HTTPException(status_code=404, detail="Global directory not found")
@@ -63,6 +63,8 @@ async def create_directory(
         access_scope=body.access_scope,
     )
     db.add(binding)
+    if project.primary_directory_id is None and body.access_scope == AccessScope.read_write:
+        project.primary_directory_id = directory.id
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -87,5 +89,11 @@ async def delete_directory(
     binding = await db.get(DirectoryBinding, binding_id)
     if binding is None or binding.project_id != project_id:
         raise HTTPException(status_code=404, detail="Directory binding not found")
+    project = await _get_project_or_404(db, project_id)
+    if binding.directory_id == project.primary_directory_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Choose another primary directory before removing this one",
+        )
     await db.delete(binding)
     await db.commit()

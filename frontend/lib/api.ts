@@ -23,7 +23,9 @@ import type {
   TaskInvocation,
   Secret,
   Task,
+  ToolApproval,
   ToolBinding,
+  ToolRuleConfig,
 } from "@/lib/types";
 
 declare global {
@@ -156,13 +158,23 @@ export const api = {
 
   tools: (projectId: string) =>
     request<ListResponse<ToolBinding>>(`/api/projects/${projectId}/tools`),
-  createTool: (projectId: string, body: { name: string; config: Record<string, unknown> }) =>
+  createTool: (projectId: string, body: { name: string; config: ToolRuleConfig }) =>
     request<ToolBinding>(`/api/projects/${projectId}/tools`, {
       method: "POST",
       ...json(body),
     }),
   deleteTool: (projectId: string, id: string) =>
     request<void>(`/api/projects/${projectId}/tools/${id}`, { method: "DELETE" }),
+  toolApprovals: (taskId: string) =>
+    request<ListResponse<ToolApproval>>(`/api/tasks/${taskId}/tool-approvals`),
+  resolveToolApproval: (
+    taskId: string,
+    approvalId: string,
+    decision: "approve_once" | "always_allow" | "deny",
+  ) => request<ToolApproval>(`/api/tasks/${taskId}/tool-approvals/${approvalId}/resolve`, {
+    method: "POST",
+    ...json({ decision }),
+  }),
 
   artifacts: (projectId: string) =>
     request<ListResponse<Artifact>>(`/api/projects/${projectId}/artifacts`),

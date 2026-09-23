@@ -43,6 +43,11 @@ asyncio singleton that is the actual "control plane" in Muster's name. It
 holds at most one live subprocess per Task, decides whether a new user
 message should be piped into an already-running process or trigger a fresh
 `--resume`'d invocation, and is the single place that flips a Task's status.
+Every invocation uses the Project's primary read/write directory as its
+working directory and attaches its remaining directory grants. Project tool
+rules are translated to native Claude allow/deny patterns or Codex exec-policy
+rules; an uncovered permission request is persisted and pauses the Task until
+the user allows it once, allows it for the Project, or denies it.
 Creating a Task or posting a chat message are both fire-and-forget triggers
 into this manager — there is deliberately no separate "run" action anywhere
 in the API.

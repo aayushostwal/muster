@@ -19,8 +19,9 @@ docker-compose.yml   Postgres + frontend only (backend runs natively)
 
 Implemented in `backend/app/db/models.py`:
 `Project, DirectoryResource, DirectoryBinding, GlobalMcpServer, AgentProfile,
-Skill, ProjectCapabilityOverride, Task, TaskInvocation, TaskEvent, Message,
-ContextSnapshot, CronJob, TaskRunAttempt, Secret` plus legacy project-scoped
+Skill, ProjectCapabilityOverride, Task, TaskInvocation, TaskEvent,
+ToolApprovalRequest, Message, ContextSnapshot, CronJob, TaskRunAttempt, Secret`
+plus legacy project-scoped
 binding types retained for API compatibility.
 
 Enums: `AgentBackend(claude_code, codex)`,
@@ -36,7 +37,7 @@ the created/updated resource. 404 on missing id, 422 on validation error
 
 ```
 GET    /api/projects                       list
-POST   /api/projects                       {name, description?, default_backend, default_model?, default_context_strategy?}
+POST   /api/projects                       {name, description?, default_backend, default_model?, default_context_strategy?, primary_directory_id?}
 GET    /api/projects/{id}
 PATCH  /api/projects/{id}                  partial update
 DELETE /api/projects/{id}
@@ -81,7 +82,7 @@ PATCH  /api/projects/{id}/mcp-servers/{binding_id}
 DELETE /api/projects/{id}/mcp-servers/{binding_id}
 
 GET    /api/projects/{id}/tools
-POST   /api/projects/{id}/tools            {name, config}
+POST   /api/projects/{id}/tools            {name, config: {backend, decision, claude_pattern?, codex_prefix?}}
 DELETE /api/projects/{id}/tools/{binding_id}
 
 GET    /api/projects/{id}/artifacts
@@ -126,6 +127,9 @@ GET    /api/tasks/{id}/transcript          -> raw transcript text (full, uncompr
 GET    /api/tasks/{id}/run-attempts        -> failure/retry log for the "Retry now" UI
 GET    /api/tasks/{id}/invocations         -> backend session ids and per-invocation token usage
 GET    /api/tasks/{id}/events              -> structured tools, diffs, reasoning, logs, and sub-agent activity
+GET    /api/tasks/{id}/tool-approvals      -> all pending/resolved runtime permission requests
+POST   /api/tasks/{id}/tool-approvals/{approval_id}/resolve
+                                            {decision: approve_once|always_allow|deny}
 ```
 
 Capability discovery covers direct user resources plus active marketplace
@@ -147,6 +151,7 @@ Server -> client JSON events, one per line:
 {"type": "activity", "event": {...TaskEvent...}}
 {"type": "invocation", "invocation": {...TaskInvocation...}}
 {"type": "token_usage", "used": 12000, "limit": 200000}
+{"type": "tool_approval", "approval": {...ToolApprovalRequest...}}
 ```
 Client -> server: not used for sending chat (that's the REST POST, so it's
 durable even if the socket drops); reserved for future typing indicators.
@@ -159,10 +164,12 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
 `trigger(task_id)`:
 1. If a process is already running for this task, just deliver the newest
    user message to its stdin (continued conversation) instead of spawning again.
-2. Else: mark Task `running`, resolve explicitly bound global directories and
+2. Else: require the Project's read/write primary directory, mark Task
+   `running`, resolve explicitly bound global directories and
    globally enabled MCP/agent/skill resources with project overrides, load
    decrypted secrets, build the backend-specific command, spawn via
-   `asyncio.create_subprocess_exec`, and start a reader task that:
+   `asyncio.create_subprocess_exec` with the primary directory as `cwd`, and
+   start a reader task that:
    - parses each backend's streaming output into messages and structured
      `TaskEvent` rows, persists them, and broadcasts over the task's WebSocket;
    - stores the native Claude/Codex session id and token counters on the
@@ -184,7 +191,8 @@ def resume_command(self, task, project, bindings, secrets, session_id: str) -> l
 
 `claude_code.py` (`ClaudeCodeAdapter`):
 - First turn: `claude -p "<prompt>" --output-format stream-json --permission-mode acceptEdits --add-dir <dir> ...`
-  for each bound directory, plus `--mcp-config <tmp json file>` built from the
+  for each bound directory, plus project `--allowedTools` / `--disallowedTools`
+  patterns and `--mcp-config <tmp json file>` built from the
   Project's MCP bindings, plus `--model <model>` if set.
 - Each stdout line is a JSON event (`stream-json`); map `type=="assistant"` to
   `AgentText`, `type=="result"` with `subtype=="success"` to `Done`, a
@@ -194,14 +202,17 @@ def resume_command(self, task, project, bindings, secrets, session_id: str) -> l
   Claude Code's headless mode is single-shot per invocation.
 - Blocking question: if `stream-json` emits a `permission_denial` /
   tool-use request that requires approval (no `--permission-mode
-  acceptEdits` coverage), treat that event as `BlockingQuestion` with the
-  raw text; the user's next message is delivered via a resumed invocation
-  that includes their answer as the prompt.
+  acceptEdits` coverage), persist a `ToolApprovalRequest`, stop the current
+  turn, and surface inline allow-once / always-allow / deny actions. A
+  resolution resumes the same native session with the chosen rule in force.
 
 `codex.py` (`CodexAdapter`):
-- Uses `codex exec "<prompt>" --json` for the first turn (Codex CLI's
-  non-interactive mode), and `codex exec resume <session_id> "<prompt>" --json`
-  for continued turns, mirroring the same event mapping.
+- Uses `codex exec "<prompt>" --json --sandbox workspace-write --cd <primary>`
+  with repeated `--add-dir` flags for the first turn, and `codex exec resume
+  <session_id> "<prompt>" --json` for continued turns. Project command-prefix
+  permissions are rendered into a disposable `CODEX_HOME` rules overlay that
+  links the user's auth, config, and sessions, so Muster never edits global
+  Codex configuration.
 
 Both adapters are intentionally thin translation layers — if the installed
 CLI's actual flags differ from the above by version, `musterctl doctor`
