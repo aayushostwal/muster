@@ -263,6 +263,36 @@ class Skill(Base):
     )
 
 
+class CapabilityImport(Base):
+    """Provenance for a capability copied from a local agent environment."""
+
+    __tablename__ = "capability_imports"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_runtime",
+            "resource_type",
+            "source_locator",
+            name="uq_capability_import_source",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    resource_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_runtime: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(30), nullable=False, default="user")
+    source_locator: Mapped[str] = mapped_column(String(2000), nullable=False)
+    source_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ProjectCapabilityOverride(Base):
     """Project-specific enablement/config for globally available capabilities."""
 

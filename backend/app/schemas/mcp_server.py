@@ -4,15 +4,29 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class McpConfig(BaseModel):
-    """Minimal schema an MCP server config must satisfy."""
+    """Portable MCP configuration shared by the Claude and Codex adapters."""
 
-    command: str
+    transport: Literal["stdio", "http", "sse"] = "stdio"
+    command: str | None = None
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    bearer_token_env_var: str | None = None
+
+    @model_validator(mode="after")
+    def validate_transport(self):
+        if self.transport == "stdio" and not self.command:
+            raise ValueError("stdio MCP servers require a command")
+        if self.transport in {"http", "sse"} and not self.url:
+            raise ValueError("remote MCP servers require a URL")
+        return self
 
 
 class McpBindingCreate(BaseModel):

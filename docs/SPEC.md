@@ -67,12 +67,16 @@ PUT    /api/projects/{id}/capabilities/{type}/{resource_id}  {enabled, config_ov
 GET    /api/models/{claude_code|codex}     one-hour cached local CLI catalog
                                                      ?refresh=true bypasses the cache
 
+GET    /api/capability-imports/discover    read-only scan with redacted previews
+POST   /api/capability-imports             {candidate_ids: [str]}
+POST   /api/capability-imports/{id}/sync   explicitly re-sync one imported source
+
 GET    /api/projects/{id}/directories
 POST   /api/projects/{id}/directories      {directory_id, access_scope}
 DELETE /api/projects/{id}/directories/{binding_id}
 
 GET    /api/projects/{id}/mcp-servers
-POST   /api/projects/{id}/mcp-servers      {name, config}   # config validated against a minimal schema: {command: str, args: [str], env: {str:str}}
+POST   /api/projects/{id}/mcp-servers      {name, config}   # stdio {command,args,env} or remote {transport,url,headers,bearer_token_env_var?}
 PATCH  /api/projects/{id}/mcp-servers/{binding_id}
 DELETE /api/projects/{id}/mcp-servers/{binding_id}
 

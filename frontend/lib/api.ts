@@ -3,6 +3,8 @@ import type {
   Artifact,
   ContextSnapshot,
   Capability,
+  CapabilityDiscovery,
+  CapabilityImportResult,
   CronJob,
   DirectoryBinding,
   DirectoryResource,
@@ -244,4 +246,15 @@ export const api = {
     request<Capability>(`/api/projects/${projectId}/capabilities/${type}/${id}`, { method: "PUT", ...json(body) }),
   models: (backend: AgentBackend, refresh = false) =>
     request<ModelCatalog>(`/api/models/${backend}?refresh=${refresh}`),
+  discoverCapabilityImports: () =>
+    request<CapabilityDiscovery>("/api/capability-imports/discover"),
+  importCapabilities: (candidateIds: string[]) =>
+    request<CapabilityImportResult>("/api/capability-imports", {
+      method: "POST",
+      ...json({ candidate_ids: candidateIds }),
+    }),
+  syncCapabilityImport: (importId: string) =>
+    request<CapabilityImportResult>(`/api/capability-imports/${importId}/sync`, {
+      method: "POST",
+    }),
 };
