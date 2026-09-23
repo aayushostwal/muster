@@ -72,7 +72,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   return (
     <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
       <header className="surface flex min-h-14 shrink-0 items-center gap-2 rounded-xl px-2.5 py-2">
-        <Tooltip label="Back to board"><Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link></Tooltip>
+        <Tooltip label="Back to board" side="bottom" align="start"><Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link></Tooltip>
         <div className="min-w-0 flex-1 px-1">
           <div className="flex min-w-0 items-center gap-1.5 text-[0.62rem] text-slate-600">
             <Link href={`/projects/${current.project_id}/board`} className="max-w-28 truncate transition hover:text-signal-300">{project.data?.name ?? "Project"}</Link>
@@ -94,14 +94,14 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         </nav>
 
         <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
-        <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"}><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
+        <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"} side="bottom"><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
         <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
-          {current.status === "failed" && <Tooltip label="Retry now"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
-          {(current.status === "done" || current.status === "cancelled") && <Tooltip label="Restart task"><Button size="icon" loading={action.isPending} onClick={() => action.mutate("restart")} aria-label="Restart task"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
-          {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
-          <Tooltip label="Run details"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
-          <Tooltip label="Task controls"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
-          <Tooltip label="Raw transcript"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
+          {current.status === "failed" && <Tooltip label="Retry now" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
+          {(current.status === "done" || current.status === "cancelled") && <Tooltip label="Restart task" side="bottom"><Button size="icon" loading={action.isPending} onClick={() => action.mutate("restart")} aria-label="Restart task"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
+          {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task" side="bottom"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
+          <Tooltip label="Run details" side="bottom"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
+          <Tooltip label="Task controls" side="bottom"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
+          <Tooltip label="Raw transcript" side="bottom" align="end"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
         </div>
         <Button className="shrink-0 sm:hidden" size="icon" variant="ghost" onClick={() => setMobileActionsOpen(true)} aria-label="Open task actions"><MoreHorizontal className="h-4 w-4" /></Button>
       </header>
