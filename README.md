@@ -25,7 +25,7 @@ container mounts and no redeploy to add a new directory.
 ### Production-style install
 
 ```bash
-curl -fsSL https://muster.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh | bash
 ```
 
 Installs Postgres + frontend containers, a dedicated backend venv, and a

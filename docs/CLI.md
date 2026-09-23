@@ -14,7 +14,7 @@ The production-style installer installs `musterctl` into `/usr/local/bin` when
 that directory is writable, otherwise into `~/.local/bin`.
 
 ```bash
-curl -fsSL https://muster.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/install.sh | bash
 command -v musterctl
 musterctl help
 ```
@@ -174,17 +174,22 @@ Passwords are never printed.
 musterctl config
 ```
 
-The default installation root is `~/.muster`. The following environment
-variables override values used by `musterctl` for the current invocation:
+The default installation root is `~/.muster`. `musterctl` loads installed
+values from `muster.env`; the following environment variables override them
+for the current invocation:
 
 | Variable | Default | Used for |
 |---|---|---|
 | `MUSTER_HOME` | `~/.muster` | Installation, configuration, backup, and Compose paths. |
-| `MUSTER_BACKEND_PORT` | `8080` | `doctor` checks. |
-| `MUSTER_FRONTEND_PORT` | `3000` | `doctor` checks and `open`. |
-| `MUSTER_POSTGRES_PORT` | `5432` | `doctor` checks. |
-| `MUSTER_POSTGRES_USER` | `muster` | Database shell, backup, and restore. |
-| `MUSTER_POSTGRES_DB` | `muster` | Database shell, backup, and restore. |
+| `MUSTER_BACKEND_PORT` | `8080` | Frontend API URL and `doctor`; rerun the installer to change the service port. |
+| `MUSTER_FRONTEND_PORT` | `3000` | Frontend host port, `doctor`, and `open`. |
+| `MUSTER_POSTGRES_PORT` | `5432` | Postgres host port, backend connection, and `doctor`. |
+| `MUSTER_POSTGRES_HOST` | `localhost` | Database host used by upgrade migrations. |
+| `MUSTER_POSTGRES_USER` | `muster` | Postgres container, backend connection, shell, backup, and restore. |
+| `MUSTER_POSTGRES_PASSWORD` | Installed value | Postgres container and migration authentication; never printed by `config`. |
+| `MUSTER_POSTGRES_DB` | `muster` | Postgres container, backend connection, shell, backup, and restore. |
+| `MUSTER_API_URL` | Backend localhost URL | API URL injected into the frontend container. |
+| `MUSTER_COMPOSE_FILE` | Installed app Compose file | Use a different Compose definition. |
 
 Set the same overrides consistently when the installation itself uses custom
 ports or database names. For example:
@@ -250,7 +255,8 @@ musterctl doctor
    without a Git checkout skip this step with a warning.
 2. Reinstalls backend dependencies into the existing virtual environment.
 3. Applies all pending Alembic database migrations.
-4. Pulls available container images, then recreates/starts Compose services.
+4. Pulls the Postgres image, rebuilds the frontend from the updated source,
+   then recreates/starts both Compose services.
 5. Restarts the native backend service.
 
 The command does not intentionally delete user data, but a database backup is

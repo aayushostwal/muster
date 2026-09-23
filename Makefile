@@ -22,7 +22,7 @@ export MUSTER_POSTGRES_PASSWORD := $(DB_PASSWORD)
 .PHONY: help install backend-install frontend-install \
         up down db-up db-down logs \
         migrate migration dev-backend dev-frontend \
-        test test-backend typecheck-frontend build-frontend \
+        test test-backend test-install typecheck-frontend build-frontend \
         clean clean-backend clean-frontend
 
 help: ## Show this help
@@ -72,6 +72,9 @@ dev-backend: ## Run the backend with hot reload (needs `make db-up` + `make migr
 
 test-backend: ## Run backend tests (in-memory SQLite, no Postgres needed)
 	cd $(BACKEND_DIR) && $(PYTHON) -m pytest
+
+test-install: ## Run hermetic macOS/Linux installer smoke tests
+	./scripts/test-install.sh
 
 ## --- Frontend --------------------------------------------------------
 

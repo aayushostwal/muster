@@ -1,13 +1,8 @@
 # Muster backend — Linux systemd USER unit template.
 #
-# Placeholders substituted by scripts/install.sh (sed):
-#   __HOME__         - the installing user's $HOME, e.g. /home/alice
-#   __VENV__         - path to the muster venv, e.g. /home/alice/.muster/venv
-#   __BACKEND_DIR__  - path to the checked-out backend/ dir, e.g.
-#                       /home/alice/.muster/app/backend
-#   __ENV_FILE__     - path to ~/.muster/muster.env (MUSTER_POSTGRES_* vars,
-#                       same values alembic used and the postgres container
-#                       was started with — see EnvironmentFile= below)
+# scripts/install.sh substitutes placeholders for the installing user's home,
+# venv, backend directory/port, service PATH, and Postgres connection values.
+# The database values match those used by Alembic and the Postgres container.
 #
 # Installed to: ~/.config/systemd/user/muster.service
 # Enabled with: systemctl --user enable --now muster.service
@@ -25,11 +20,15 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=__BACKEND_DIR__
-Environment=HOME=__HOME__
-Environment=PATH=__VENV__/bin:/usr/local/bin:/usr/bin:/bin
-EnvironmentFile=__ENV_FILE__
-ExecStart=__VENV__/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+WorkingDirectory="__BACKEND_DIR__"
+Environment="HOME=__HOME__"
+Environment="PATH=__PATH__"
+Environment="MUSTER_POSTGRES_HOST=__PG_HOST__"
+Environment="MUSTER_POSTGRES_PORT=__PG_PORT__"
+Environment="MUSTER_POSTGRES_USER=__PG_USER__"
+Environment="MUSTER_POSTGRES_PASSWORD=__PG_PASSWORD__"
+Environment="MUSTER_POSTGRES_DB=__PG_DB__"
+ExecStart="__VENV__/bin/uvicorn" app.main:app --host 0.0.0.0 --port __BACKEND_PORT__
 Restart=on-failure
 RestartSec=3
 
