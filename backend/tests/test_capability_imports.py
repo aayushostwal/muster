@@ -21,7 +21,8 @@ def _write(path: Path, content: str) -> None:
 def _source_home(tmp_path: Path) -> Path:
     _write(
         tmp_path / ".claude" / "agents" / "reviewer.md",
-        "---\nname: Reviewer\ndescription: Reviews changes\nmodel: sonnet\n---\n"
+        "---\nname: Reviewer\ndescription: Reviews changes\nmodel: sonnet\n"
+        "tools: Bash, Read, Grep\n---\n"
         "Review changes for correctness and security.\n",
     )
     _write(
@@ -80,6 +81,8 @@ def test_discovery_normalizes_sources_and_redacts_secret_values(tmp_path: Path):
     assert issue_server.preview["environment_keys"] == ["SECRET_TOKEN"]
     release = next(item for item in result.items if item.name == "Release")
     assert release.warnings
+    reviewer = next(item for item in result.items if item.name == "Reviewer")
+    assert reviewer.payload["config"]["tools"] == ["Bash", "Read", "Grep"]
 
 
 def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path):

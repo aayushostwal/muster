@@ -24,6 +24,23 @@ class ClaudeCodeAdapter:
 
     backend = AgentBackend.claude_code
 
+    @staticmethod
+    def _normalize_agent_profiles(agent_profiles: dict[str, dict]) -> dict[str, dict]:
+        """Convert imported frontmatter values to Claude's --agents JSON schema."""
+        normalized: dict[str, dict] = {}
+        for name, profile in agent_profiles.items():
+            definition = dict(profile)
+            for field in ("tools", "disallowedTools"):
+                value = definition.get(field)
+                if isinstance(value, str):
+                    definition[field] = [item.strip() for item in value.split(",") if item.strip()]
+                elif isinstance(value, list):
+                    definition[field] = [str(item).strip() for item in value if str(item).strip()]
+                elif value is not None:
+                    definition.pop(field)
+            normalized[name] = definition
+        return normalized
+
     def _write_mcp_config(self, mcp_servers: dict[str, dict]) -> str | None:
         """Write the Project's MCP bindings to a temp JSON file for --mcp-config.
 
@@ -97,7 +114,10 @@ class ClaudeCodeAdapter:
         if task.thinking_level:
             flags += ["--effort", task.thinking_level]
         if bindings.agent_profiles:
-            flags += ["--agents", json.dumps(bindings.agent_profiles)]
+            flags += [
+                "--agents",
+                json.dumps(self._normalize_agent_profiles(bindings.agent_profiles)),
+            ]
         system_sections = []
         if bindings.selected_agent_prompt:
             system_sections.append(bindings.selected_agent_prompt)
