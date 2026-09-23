@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Bot } from "lucide-react";
+import { ArrowRight, Bot, FolderCode } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
@@ -21,8 +21,10 @@ export function CreateProjectModal({ open, onClose }: { open: boolean; onClose: 
   const [description, setDescription] = useState("");
   const [backend, setBackend] = useState<AgentBackend>("claude_code");
   const [model, setModel] = useState("");
+  const [primaryDirectoryId, setPrimaryDirectoryId] = useState("");
   const [error, setError] = useState("");
   const models = useQuery({ queryKey: ["models", backend], queryFn: () => api.models(backend), enabled: open, staleTime: 60 * 60 * 1000 });
+  const directories = useQuery({ queryKey: ["registry", "directories"], queryFn: api.globalDirectories, enabled: open });
 
   const create = useMutation({
     mutationFn: api.createProject,
@@ -49,11 +51,12 @@ export function CreateProjectModal({ open, onClose }: { open: boolean; onClose: 
       default_backend: backend,
       default_model: model.trim() || null,
       default_context_strategy: "full",
+      primary_directory_id: primaryDirectoryId || null,
     });
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Create a project" description="Define the default agent profile. Bindings can be added after creation.">
+    <Modal open={open} onClose={onClose} title="Create a project" description="Choose the repository agents start in and the default runtime profile.">
       <form onSubmit={submit} className="space-y-5">
         <div>
           <label className="label" htmlFor="project-name">Project name</label>
@@ -78,6 +81,19 @@ export function CreateProjectModal({ open, onClose }: { open: boolean; onClose: 
         <div>
           <label className="label">Preferred model <span className="text-slate-600">— optional</span></label>
           <Select label={models.isPending ? "Discovering models" : "Select a model"} value={model} onChange={setModel} options={[{ value: "", label: "Runtime default" }, ...(models.data?.items.map((item) => ({ value: item.id, label: item.label, description: item.id })) ?? [])]} />
+        </div>
+        <div>
+          <label className="label">Primary directory <span className="text-slate-600">— recommended</span></label>
+          <Select
+            label={directories.isPending ? "Loading directories" : "Select the agent working directory"}
+            value={primaryDirectoryId}
+            onChange={setPrimaryDirectoryId}
+            options={[
+              { value: "", label: "Configure later", description: "Tasks cannot run until a primary directory is selected" },
+              ...(directories.data?.items.map((item) => ({ value: item.id, label: item.name, description: item.path })) ?? []),
+            ]}
+          />
+          <p className="mt-2 flex items-center gap-1.5 text-[0.65rem] leading-5 text-slate-600"><FolderCode className="h-3.5 w-3.5" />The selected directory is automatically granted read/write access.</p>
         </div>
         {error && <p role="alert" className="rounded-xl border border-red-400/15 bg-red-400/[0.06] px-3 py-2.5 text-xs text-red-300">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">

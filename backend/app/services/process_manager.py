@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 import os
+import shlex
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -38,6 +40,7 @@ from app.db.models import (
     TaskInvocation,
     TaskRunAttempt,
     TaskStatus,
+    ToolApprovalRequest,
 )
 from app.db.session import SessionLocal
 from app.services import retry
@@ -50,11 +53,12 @@ from app.services.agent_backends.base import (
     Done,
     ErrorEvent,
     ParsedEvent,
+    PermissionRequest,
     SessionId,
     UsageEvent,
 )
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
-from app.services.agent_backends.codex import CodexAdapter
+from app.services.agent_backends.codex import CodexAdapter, create_codex_home_overlay
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +75,15 @@ _FORCE_KILL_GRACE = 5.0
 class RunningProcess:
     process: asyncio.subprocess.Process
     invocation_id: uuid.UUID
+    backend: AgentBackend
     temp_paths: tuple[Path, ...] = ()
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None
     stderr_buf: bytearray = field(default_factory=bytearray)
     blocking_question_hit: bool = False
     cancel_requested: bool = False
+    pending_tool_calls: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    permission_requests: set[str] = field(default_factory=set)
 
 
 class ProcessManager:
@@ -134,6 +141,20 @@ class ProcessManager:
             pending.cancel()
         await self.trigger(task_id)
 
+    async def resume_after_approval(self, task_id: uuid.UUID) -> None:
+        """Stop an approval-blocked CLI turn, then resume it with the new rule set."""
+        running = self._running.get(task_id)
+        if running is not None and running.process.returncode is None:
+            running.process.terminate()
+            try:
+                await asyncio.wait_for(running.process.wait(), timeout=_FORCE_KILL_GRACE)
+            except asyncio.TimeoutError:
+                running.process.kill()
+                await running.process.wait()
+            if running.reader_task is not None and running.reader_task is not asyncio.current_task():
+                await running.reader_task
+        await self.trigger(task_id)
+
     @staticmethod
     async def _force_kill_later(process: asyncio.subprocess.Process) -> None:
         try:
@@ -181,6 +202,25 @@ class ProcessManager:
             bindings = await self._bindings_for(db, project, task)
             secrets = {s.key_name: decrypt_secret(s.encrypted_value) for s in project.secrets}
 
+            if not bindings.primary_directory:
+                message = "This project has no primary directory. Choose one in Project > Directories before running tasks."
+                task.status = TaskStatus.failed
+                task.completed_at = datetime.now(timezone.utc)
+                db.add(Message(task_id=task_id, sender=MessageSender.system, content_text=message))
+                await db.commit()
+                await self._append_transcript(task_id, "system", message)
+                await broadcast(task_id, {"type": "status", "status": TaskStatus.failed.value})
+                return
+            if not Path(bindings.primary_directory).is_dir():
+                message = f"Primary directory is unavailable: {bindings.primary_directory}"
+                task.status = TaskStatus.failed
+                task.completed_at = datetime.now(timezone.utc)
+                db.add(Message(task_id=task_id, sender=MessageSender.system, content_text=message))
+                await db.commit()
+                await self._append_transcript(task_id, "system", message)
+                await broadcast(task_id, {"type": "status", "status": TaskStatus.failed.value})
+                return
+
             if task.session_id:
                 prompt = await self._latest_user_prompt_db(db, task_id) or task.initial_prompt
                 cmd = adapter.resume_command(task, project, bindings, secrets, task.session_id, prompt)
@@ -208,16 +248,25 @@ class ProcessManager:
 
         await broadcast(task_id, {"type": "status", "status": TaskStatus.running.value})
 
+        runtime_env = {**os.environ, **secrets}
+        runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd))
+        if task.backend == AgentBackend.codex:
+            codex_home = create_codex_home_overlay(bindings.tool_rules)
+            if codex_home is not None:
+                runtime_env["CODEX_HOME"] = str(codex_home)
+                runtime_temp_paths.append(codex_home)
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
-                env={**os.environ, **secrets},
+                env=runtime_env,
+                cwd=bindings.primary_directory,
             )
         except OSError as exc:
-            _cleanup_temp_paths(_command_temp_paths(cmd))
+            _cleanup_temp_paths(tuple(runtime_temp_paths))
             message = f"Unable to start {task.backend.value}: {exc}"
             async with SessionLocal() as db:
                 failed_invocation = await db.get(TaskInvocation, invocation_id)
@@ -247,13 +296,26 @@ class ProcessManager:
         running = RunningProcess(
             process=process,
             invocation_id=invocation_id,
-            temp_paths=_command_temp_paths(cmd),
+            backend=task.backend,
+            temp_paths=tuple(runtime_temp_paths),
         )
         running.reader_task = asyncio.create_task(self._read_stdout(task_id, process, adapter, running))
         running.stderr_task = asyncio.create_task(
             self._read_stderr(task_id, invocation_id, process, running)
         )
         self._running[task_id] = running
+        if bindings.approval_ids:
+            async with SessionLocal() as db:
+                approvals = (
+                    await db.execute(
+                        select(ToolApprovalRequest).where(
+                            ToolApprovalRequest.id.in_(bindings.approval_ids)
+                        )
+                    )
+                ).scalars().all()
+                for approval in approvals:
+                    approval.status = "consumed"
+                await db.commit()
         await self._persist_activity(
             task_id,
             invocation_id,
@@ -268,6 +330,7 @@ class ProcessManager:
             .options(
                 selectinload(Project.directories),
                 selectinload(Project.directories).selectinload(DirectoryBinding.directory),
+                selectinload(Project.primary_directory),
                 selectinload(Project.mcp_servers),
                 selectinload(Project.tools),
                 selectinload(Project.secrets),
@@ -329,13 +392,36 @@ class ProcessManager:
             if row.enabled
             and (override_map.get(("skill", row.id)) is None or override_map[("skill", row.id)].enabled)
         }
+        one_time_approvals = (
+            await db.execute(
+                select(ToolApprovalRequest).where(
+                    ToolApprovalRequest.task_id == task.id,
+                    ToolApprovalRequest.status == "approved_once",
+                )
+            )
+        ).scalars().all()
+        project_rules = [dict(tool.config or {}) for tool in project.tools]
+        project_rules.extend(dict(approval.permission_rule or {}) for approval in one_time_approvals)
+
+        directory_paths = [
+            binding.directory.path if binding.directory else binding.path
+            for binding in project.directories
+        ]
+        primary_directory = project.primary_directory.path if project.primary_directory else None
+        if primary_directory and primary_directory not in directory_paths:
+            primary_directory = None
+        if primary_directory:
+            directory_paths = [primary_directory, *[path for path in directory_paths if path != primary_directory]]
+
         return AdapterBindings(
-            directories=[d.directory.path if d.directory else d.path for d in project.directories],
+            primary_directory=primary_directory,
+            directories=directory_paths,
             mcp_servers=mcp_servers,
-            tool_names=[t.name for t in project.tools],
+            tool_rules=project_rules,
             agent_profiles=agent_profiles,
             skills=skills,
             selected_agent_prompt=selected.system_prompt if selected else None,
+            approval_ids=tuple(approval.id for approval in one_time_approvals),
         )
 
     async def _latest_user_prompt(self, task_id: uuid.UUID) -> str | None:
@@ -415,6 +501,8 @@ class ProcessManager:
                 task_id, MessageSender.agent, event.text, is_blocking_question=True
             )
             await self._set_status(task_id, TaskStatus.waiting_on_you)
+        elif isinstance(event, PermissionRequest):
+            await self._handle_permission_request(task_id, running, event)
         elif isinstance(event, SessionId):
             async with SessionLocal() as db:
                 task = await db.get(Task, task_id)
@@ -431,6 +519,16 @@ class ProcessManager:
         elif isinstance(event, ErrorEvent):
             await self._persist_and_broadcast_message(task_id, MessageSender.system, event.message)
         elif isinstance(event, ActivityEvent):
+            tool_use_id = str(event.metadata.get("tool_use_id") or event.metadata.get("item_id") or "")
+            if event.kind == "tool_call" and tool_use_id:
+                try:
+                    tool_input = json.loads(event.content or "{}")
+                except json.JSONDecodeError:
+                    tool_input = {"command": event.content} if event.content else {}
+                running.pending_tool_calls[tool_use_id] = (
+                    event.title,
+                    tool_input if isinstance(tool_input, dict) else {"input": tool_input},
+                )
             await self._persist_activity(
                 task_id,
                 running.invocation_id,
@@ -439,6 +537,23 @@ class ProcessManager:
                 event.content,
                 event.metadata,
             )
+            if (
+                event.kind == "tool_result"
+                and event.metadata.get("is_error")
+                and _is_permission_failure(event.content)
+            ):
+                tool_name, tool_input = running.pending_tool_calls.get(
+                    tool_use_id, ("Tool", {})
+                )
+                await self._handle_permission_request(
+                    task_id,
+                    running,
+                    PermissionRequest(
+                        tool_name=tool_name,
+                        tool_input=tool_input,
+                        reason=event.content,
+                    ),
+                )
         elif isinstance(event, UsageEvent):
             async with SessionLocal() as db:
                 invocation = await db.get(TaskInvocation, running.invocation_id)
@@ -449,6 +564,57 @@ class ProcessManager:
                     await db.commit()
                     await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
                     await broadcast(task_id, {"type": "token_usage", "used": event.input_tokens + event.output_tokens, "limit": 0})
+
+    async def _handle_permission_request(
+        self,
+        task_id: uuid.UUID,
+        running: RunningProcess,
+        request: PermissionRequest,
+    ) -> None:
+        if running.blocking_question_hit:
+            return
+        fingerprint = json.dumps(
+            {"tool": request.tool_name, "input": request.tool_input}, sort_keys=True, default=str
+        )
+        if fingerprint in running.permission_requests:
+            return
+        running.permission_requests.add(fingerprint)
+        running.blocking_question_hit = True
+        rule = _suggest_permission_rule(running.backend, request.tool_name, request.tool_input)
+        async with SessionLocal() as db:
+            approval = ToolApprovalRequest(
+                task_id=task_id,
+                invocation_id=running.invocation_id,
+                backend=running.backend,
+                tool_name=request.tool_name,
+                tool_input=request.tool_input,
+                permission_rule=rule,
+                reason=request.reason,
+            )
+            db.add(approval)
+            await db.commit()
+            await db.refresh(approval)
+        await self._persist_activity(
+            task_id,
+            running.invocation_id,
+            "permission",
+            f"Permission required: {request.tool_name}",
+            request.reason,
+            {"approval_id": str(approval.id), "permission_rule": rule},
+        )
+        await self._persist_and_broadcast_message(
+            task_id,
+            MessageSender.agent,
+            f"Permission required to run {request.tool_name}. Approve or deny the request below.",
+            is_blocking_question=True,
+        )
+        await self._set_status(task_id, TaskStatus.waiting_on_you)
+        await broadcast(
+            task_id,
+            {"type": "tool_approval", "approval": _serialize_tool_approval(approval)},
+        )
+        if running.process.returncode is None:
+            running.process.terminate()
 
     async def _persist_and_broadcast_message(
         self,
@@ -617,9 +783,63 @@ def _command_temp_paths(command: list[str]) -> tuple[Path, ...]:
 def _cleanup_temp_paths(paths: tuple[Path, ...]) -> None:
     for path in paths:
         try:
-            path.unlink(missing_ok=True)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
         except OSError:
             logger.warning("could not remove temporary runtime config %s", path)
+
+
+def _is_permission_failure(content: str | None) -> bool:
+    if not content:
+        return False
+    normalized = content.lower()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "requires approval",
+            "require approval",
+            "was blocked. for security",
+            "permission denied",
+            "not approved",
+        )
+    )
+
+
+def _command_tokens(tool_input: dict) -> list[str]:
+    command = tool_input.get("command") or tool_input.get("cmd")
+    if isinstance(command, list):
+        return [str(token) for token in command if str(token)]
+    if not isinstance(command, str):
+        return []
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _suggest_permission_rule(
+    backend: AgentBackend, tool_name: str, tool_input: dict
+) -> dict:
+    tokens = _command_tokens(tool_input)
+    executable = Path(tokens[0]).name if tokens else ""
+    if backend == AgentBackend.claude_code:
+        claude_pattern = tool_name
+        if tool_name.lower() == "bash" and executable:
+            claude_pattern = f"Bash({executable} *)"
+        return {
+            "backend": "claude_code",
+            "decision": "allow",
+            "claude_pattern": claude_pattern,
+            "codex_prefix": [],
+        }
+    return {
+        "backend": "codex",
+        "decision": "allow",
+        "claude_pattern": None,
+        "codex_prefix": [executable] if executable else [tool_name],
+    }
 
 
 def _serialize_message(message: Message) -> dict:
@@ -631,6 +851,23 @@ def _serialize_message(message: Message) -> dict:
         "media": message.media,
         "is_blocking_question": message.is_blocking_question,
         "created_at": message.created_at.isoformat() if message.created_at else None,
+    }
+
+
+def _serialize_tool_approval(approval: ToolApprovalRequest) -> dict:
+    return {
+        "id": str(approval.id),
+        "task_id": str(approval.task_id),
+        "invocation_id": str(approval.invocation_id) if approval.invocation_id else None,
+        "backend": approval.backend.value,
+        "tool_name": approval.tool_name,
+        "tool_input": approval.tool_input,
+        "permission_rule": approval.permission_rule,
+        "reason": approval.reason,
+        "status": approval.status,
+        "resolution_scope": approval.resolution_scope,
+        "created_at": approval.created_at.isoformat() if approval.created_at else None,
+        "resolved_at": approval.resolved_at.isoformat() if approval.resolved_at else None,
     }
 
 

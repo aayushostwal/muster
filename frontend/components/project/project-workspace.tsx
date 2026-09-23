@@ -1,11 +1,11 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Clock3, FolderCode, KeyRound, Link2, Network, Settings2, Sparkles } from "lucide-react";
+import { Bot, Clock3, Code2, FolderCode, KeyRound, Link2, Network, Settings2, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 import { ProjectHeader } from "@/components/project/project-header";
-import { ArtifactPanel, CapabilityPanel, CronPanel, DirectoryPanel, ProfilePanel, SecretPanel } from "@/components/project/resource-panels";
+import { ArtifactPanel, CapabilityPanel, CronPanel, DirectoryPanel, ProfilePanel, SecretPanel, ToolPanel } from "@/components/project/resource-panels";
 import { cn } from "@/lib/utils";
 
 const tabs = [
@@ -14,6 +14,7 @@ const tabs = [
   { id: "agents", label: "Agents", icon: Bot },
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "mcp", label: "MCP connectors", icon: Network },
+  { id: "tools", label: "Tool permissions", icon: Code2 },
   { id: "artifacts", label: "Artifacts", icon: Link2 },
   { id: "schedules", label: "Schedules", icon: Clock3 },
   { id: "secrets", label: "Secrets", icon: KeyRound },
@@ -47,6 +48,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
             {active === "agents" && <CapabilityPanel projectId={projectId} type="agent" />}
             {active === "skills" && <CapabilityPanel projectId={projectId} type="skill" />}
             {active === "mcp" && <CapabilityPanel projectId={projectId} type="mcp" />}
+            {active === "tools" && <ToolPanel projectId={projectId} />}
             {active === "artifacts" && <ArtifactPanel projectId={projectId} />}
             {active === "schedules" && <CronPanel projectId={projectId} />}
             {active === "secrets" && <SecretPanel projectId={projectId} />}

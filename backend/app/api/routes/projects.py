@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Project
+from app.db.models import AccessScope, DirectoryBinding, DirectoryResource, Project
 from app.db.session import get_db
 from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 
@@ -32,8 +32,25 @@ async def list_projects(
 
 @router.post("", status_code=201, response_model=ProjectRead)
 async def create_project(body: ProjectCreate, db: AsyncSession = Depends(get_db)):
-    project = Project(**body.model_dump())
+    data = body.model_dump()
+    primary_directory_id = data.pop("primary_directory_id")
+    directory = None
+    if primary_directory_id is not None:
+        directory = await db.get(DirectoryResource, primary_directory_id)
+        if directory is None:
+            raise HTTPException(status_code=404, detail="Primary directory not found")
+    project = Project(**data, primary_directory_id=primary_directory_id)
     db.add(project)
+    await db.flush()
+    if directory is not None:
+        db.add(
+            DirectoryBinding(
+                project_id=project.id,
+                directory_id=directory.id,
+                path=directory.path,
+                access_scope=AccessScope.read_write,
+            )
+        )
     await db.commit()
     await db.refresh(project)
     return project
@@ -49,7 +66,28 @@ async def update_project(
     project_id: uuid.UUID, body: ProjectUpdate, db: AsyncSession = Depends(get_db)
 ):
     project = await _get_project_or_404(db, project_id)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    if "primary_directory_id" in changes and changes["primary_directory_id"] is not None:
+        directory_id = changes["primary_directory_id"]
+        binding = (
+            await db.execute(
+                select(DirectoryBinding).where(
+                    DirectoryBinding.project_id == project_id,
+                    DirectoryBinding.directory_id == directory_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if binding is None:
+            raise HTTPException(
+                status_code=422,
+                detail="The primary directory must already be granted to this project",
+            )
+        if binding.access_scope != AccessScope.read_write:
+            raise HTTPException(
+                status_code=422,
+                detail="The primary directory requires read and write access",
+            )
+    for field, value in changes.items():
         setattr(project, field, value)
     await db.commit()
     await db.refresh(project)

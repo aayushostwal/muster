@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from pathlib import Path
 
 from app.config import settings
 from app.db.models import AgentBackend, Project, Task
@@ -9,10 +12,10 @@ from app.services.agent_backends.base import (
     AdapterBindings,
     ActivityEvent,
     AgentText,
-    BlockingQuestion,
     Done,
     ErrorEvent,
     ParsedEvent,
+    PermissionRequest,
     SessionId,
     UsageEvent,
 )
@@ -90,12 +93,12 @@ class CodexAdapter:
         model = task.model or project.default_model
         if model:
             cmd += ["--model", model]
+        cmd += ["--sandbox", "workspace-write", "-c", 'approval_policy="on-request"']
+        if bindings.primary_directory:
+            cmd += ["--cd", bindings.primary_directory]
         for directory in bindings.directories:
-            # Codex CLI grants filesystem access via a repeated --cd/--sandbox
-            # writable-dir style flag; mirrored here as --add-dir for parity
-            # with the claude adapter until the real Codex flag is confirmed
-            # (see SPEC.md note on `musterctl doctor` surfacing CLI mismatches).
-            cmd += ["--add-dir", directory]
+            if directory != bindings.primary_directory:
+                cmd += ["--add-dir", directory]
         cmd += self._capability_flags(task, bindings)
         return cmd
 
@@ -112,6 +115,9 @@ class CodexAdapter:
         model = task.model or project.default_model
         if model:
             cmd += ["--model", model]
+        # `exec resume` restores the original sandbox and writable roots and
+        # does not accept `--cd`, `--add-dir`, or `--sandbox` again.
+        cmd += ["-c", 'approval_policy="on-request"']
         cmd += self._capability_flags(task, bindings)
         return cmd
 
@@ -149,7 +155,24 @@ class CodexAdapter:
             }
             if item_type in kind_map:
                 content = item.get("diff") or item.get("output") or item.get("command") or item.get("text")
-                return ActivityEvent(kind=kind_map[item_type], title=str(item.get("name") or item_type.replace("_", " ").title()), content=content if isinstance(content, str) else json.dumps(content, indent=2) if content is not None else None, metadata={"status": item.get("status"), "item_id": item.get("id")})
+                status = item.get("status")
+                return ActivityEvent(
+                    kind=kind_map[item_type],
+                    title=str(item.get("name") or item_type.replace("_", " ").title()),
+                    content=(
+                        content
+                        if isinstance(content, str)
+                        else json.dumps(content, indent=2)
+                        if content is not None
+                        else None
+                    ),
+                    metadata={
+                        "status": status,
+                        "item_id": item.get("id"),
+                        "is_error": status in {"failed", "denied"}
+                        or bool(item.get("exit_code")),
+                    },
+                )
 
         if event_type in ("turn.completed", "task_complete", "result"):
             usage = event.get("usage") or event.get("token_usage") or {}
@@ -160,8 +183,13 @@ class CodexAdapter:
             return parsed
 
         if event_type in ("approval_request", "exec_approval_request", "patch_approval_request"):
-            text = event.get("message") or event.get("reason") or json.dumps(event)
-            return BlockingQuestion(text=text)
+            request = event.get("request") if isinstance(event.get("request"), dict) else event
+            command = request.get("command") or request.get("cmd") or request.get("changes")
+            return PermissionRequest(
+                tool_name="Shell" if command else "File change",
+                tool_input={"command": command} if command is not None else request,
+                reason=event.get("message") or event.get("reason"),
+            )
 
         if event_type in ("thread.started", "session_configured") and session_id:
             return SessionId(session_id=str(session_id))
@@ -188,3 +216,37 @@ class CodexAdapter:
             if isinstance(item.get("message"), str):
                 return item["message"]
         return ""
+
+
+def create_codex_home_overlay(tool_rules: list[dict]) -> Path | None:
+    """Layer project exec rules over the user's Codex state without mutating it."""
+    codex_rules = [
+        rule
+        for rule in tool_rules
+        if rule.get("backend") in {"all", "codex"} and rule.get("codex_prefix")
+    ]
+    if not codex_rules:
+        return None
+
+    source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    overlay = Path(tempfile.mkdtemp(prefix="muster-codex-home-"))
+    for source in source_home.iterdir() if source_home.exists() else ():
+        if source.name == "rules":
+            continue
+        (overlay / source.name).symlink_to(source, target_is_directory=source.is_dir())
+
+    rules_dir = overlay / "rules"
+    rules_dir.mkdir()
+    source_rules = source_home / "rules"
+    if source_rules.is_dir():
+        for source in source_rules.glob("*.rules"):
+            (rules_dir / f"user-{source.name}").symlink_to(source)
+
+    rendered = []
+    for rule in codex_rules:
+        decision = "allow" if rule.get("decision") == "allow" else "forbidden"
+        rendered.append(
+            f"prefix_rule(pattern={json.dumps(rule['codex_prefix'])}, decision={json.dumps(decision)})"
+        )
+    (rules_dir / "muster.rules").write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    return overlay

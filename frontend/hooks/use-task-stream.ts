@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { apiBase } from "@/lib/api";
-import type { ListResponse, Message, RunAttempt, Task, TaskEvent, TaskInvocation, TaskStreamEvent } from "@/lib/types";
+import type { ListResponse, Message, RunAttempt, Task, TaskEvent, TaskInvocation, TaskStreamEvent, ToolApproval } from "@/lib/types";
 
 export function useTaskStream(taskId: string) {
   const queryClient = useQueryClient();
@@ -58,6 +58,13 @@ export function useTaskStream(taskId: string) {
             });
           }
           if (event.type === "token_usage") setTokenUsage({ used: event.used, limit: event.limit });
+          if (event.type === "tool_approval") {
+            queryClient.setQueryData<ListResponse<ToolApproval>>(["tool-approvals", taskId], (current) => {
+              const items = current?.items ?? [];
+              if (items.some((item) => item.id === event.approval.id)) return current;
+              return { items: [...items, event.approval] };
+            });
+          }
         } catch {
           // Ignore malformed frames and retain the live connection.
         }

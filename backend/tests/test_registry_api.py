@@ -49,6 +49,31 @@ async def test_global_registry_and_project_access(override_get_db):
         )
         assert duplicate.status_code == 409
 
+        primary_update = await client.patch(
+            f"/api/projects/{project_id}",
+            json={"primary_directory_id": directory["id"]},
+        )
+        assert primary_update.status_code == 200
+        assert primary_update.json()["primary_directory_id"] == directory["id"]
+        assert (
+            await client.delete(
+                f"/api/projects/{project_id}/directories/{binding_response.json()['id']}"
+            )
+        ).status_code == 409
+
+        created_with_root = await client.post(
+            "/api/projects",
+            json={
+                "name": "Rooted project",
+                "default_backend": "claude_code",
+                "primary_directory_id": directory["id"],
+            },
+        )
+        assert created_with_root.status_code == 201
+        rooted_id = created_with_root.json()["id"]
+        rooted_directories = await client.get(f"/api/projects/{rooted_id}/directories")
+        assert rooted_directories.json()["items"][0]["directory_id"] == directory["id"]
+
         agent_response = await client.post(
             "/api/agents",
             json={

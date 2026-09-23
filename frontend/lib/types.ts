@@ -16,6 +16,7 @@ export interface Project {
   default_backend: AgentBackend;
   default_model: string | null;
   default_context_strategy: string;
+  primary_directory_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -26,6 +27,7 @@ export interface ProjectInput {
   default_backend: AgentBackend;
   default_model?: string | null;
   default_context_strategy?: string;
+  primary_directory_id?: string | null;
 }
 
 export interface Task {
@@ -91,8 +93,30 @@ export interface ToolBinding {
   id: string;
   project_id: string;
   name: string;
-  config: Record<string, unknown>;
+  config: Partial<ToolRuleConfig> & Record<string, unknown>;
   created_at: string;
+}
+
+export interface ToolRuleConfig {
+  backend: "all" | AgentBackend;
+  decision: "allow" | "deny";
+  claude_pattern: string | null;
+  codex_prefix: string[];
+}
+
+export interface ToolApproval {
+  id: string;
+  task_id: string;
+  invocation_id: string | null;
+  backend: AgentBackend;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  permission_rule: ToolRuleConfig;
+  reason: string | null;
+  status: "pending" | "approved_once" | "approved_project" | "denied" | "consumed";
+  resolution_scope: "once" | "project" | null;
+  created_at: string;
+  resolved_at: string | null;
 }
 
 export interface Artifact {
@@ -282,4 +306,5 @@ export type TaskStreamEvent =
   | { type: "run_attempt"; attempt: RunAttempt }
   | { type: "activity"; event: TaskEvent }
   | { type: "invocation"; invocation: TaskInvocation }
-  | { type: "token_usage"; used: number; limit: number };
+  | { type: "token_usage"; used: number; limit: number }
+  | { type: "tool_approval"; approval: ToolApproval };

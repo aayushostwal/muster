@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Protocol, Union
+import uuid
 
 from app.db.models import AgentBackend, Project, Task
 
@@ -25,6 +26,15 @@ class BlockingQuestion:
     """The agent is blocked on a permission/approval decision from the user."""
 
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionRequest:
+    """A concrete backend tool call that requires a user decision."""
+
+    tool_name: str
+    tool_input: dict = field(default_factory=dict)
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +75,16 @@ class UsageEvent:
     cached_tokens: int = 0
 
 
-ParsedEvent = Union[AgentText, BlockingQuestion, SessionId, Done, ErrorEvent, ActivityEvent, UsageEvent]
+ParsedEvent = Union[
+    AgentText,
+    BlockingQuestion,
+    PermissionRequest,
+    SessionId,
+    Done,
+    ErrorEvent,
+    ActivityEvent,
+    UsageEvent,
+]
 
 
 class AgentBackendAdapter(Protocol):
@@ -108,9 +127,11 @@ class AdapterBindings:
     session / lazy-loaded relationships when building commands.
     """
 
+    primary_directory: str | None
     directories: list[str]
     mcp_servers: dict[str, dict]  # name -> {command, args, env}
-    tool_names: list[str]
+    tool_rules: list[dict]
     agent_profiles: dict[str, dict]
     skills: dict[str, str]
     selected_agent_prompt: str | None = None
+    approval_ids: tuple[uuid.UUID, ...] = ()
