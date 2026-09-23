@@ -102,6 +102,7 @@ export const api = {
       model?: string;
       context_strategy?: string;
       fallback_models?: string[];
+      tags?: string[];
       thinking_level?: string;
       agent_id?: string;
     },
@@ -119,6 +120,8 @@ export const api = {
       method: "PATCH",
       ...json({ context_strategy }),
     }),
+  updateTaskTags: (id: string, tags: string[]) =>
+    request<Task>(`/api/tasks/${id}/tags`, { method: "PATCH", ...json({ tags }) }),
   compressContext: (id: string) =>
     request<ContextSnapshot>(`/api/tasks/${id}/compress-context`, { method: "POST" }),
   messages: (id: string) => request<ListResponse<Message>>(`/api/tasks/${id}/messages`),

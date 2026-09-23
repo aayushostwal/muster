@@ -19,7 +19,7 @@ from app.schemas.context_snapshot import ContextSnapshotRead
 from app.schemas.activity import TaskEventRead, TaskInvocationRead
 from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.run_attempt import TaskRunAttemptRead
-from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskThinkingUpdate
+from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskTagsUpdate, TaskThinkingUpdate
 from app.services.process_manager import process_manager
 
 router = APIRouter(tags=["tasks"])
@@ -82,6 +82,7 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
         backend=body.backend or (agent.backend if agent else project.default_backend),
         model=body.model or (agent.model if agent else project.default_model),
         fallback_models=body.fallback_models,
+        tags=body.tags,
         thinking_level=body.thinking_level or (agent.thinking_level if agent else "medium"),
         agent_id=body.agent_id,
         context_strategy=body.context_strategy or project.default_context_strategy,
@@ -171,6 +172,17 @@ async def update_task_context_strategy(
 ):
     task = await _get_task_or_404(db, task_id)
     task.context_strategy = body.context_strategy
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/tags", response_model=TaskRead)
+async def update_task_tags(
+    task_id: uuid.UUID, body: TaskTagsUpdate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    task.tags = body.tags
     await db.commit()
     await db.refresh(task)
     return task
