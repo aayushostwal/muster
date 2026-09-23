@@ -26,6 +26,9 @@ Selected resources are copied into Muster's global registry with provenance
 and a checksum, so a later scan can show whether a source changed and re-sync
 it explicitly. Discovery previews expose key names and counts but never MCP
 environment or header values. Native Claude/Codex files are never modified.
+Enabled Claude and Codex plugins are resolved through their installed-plugin
+metadata, so marketplace capabilities such as Nexus are included without
+scanning stale cache versions or uninstalled marketplace source checkouts.
 
 **REST + WebSocket API** (`app/api/routes/`) — one router per resource
 (`projects`, `directories`, `mcp_servers`, `tools`, `artifacts`, `secrets`,

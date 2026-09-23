@@ -82,6 +82,72 @@ def test_discovery_normalizes_sources_and_redacts_secret_values(tmp_path: Path):
     assert release.warnings
 
 
+def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path):
+    claude_root = tmp_path / ".claude" / "plugins" / "cache" / "nexus" / "nexus" / "1.35.0"
+    _write(
+        claude_root / "skills" / "incident" / "SKILL.md",
+        "---\nname: Nexus Incident\ndescription: Handle incidents\n---\nStabilize and investigate.\n",
+    )
+    _write(
+        claude_root / "agents" / "reviewer.md",
+        "---\nname: Nexus Reviewer\ndescription: Reviews production changes\n---\nReview safely.\n",
+    )
+    _write(
+        tmp_path / ".claude" / "plugins" / "installed_plugins.json",
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "nexus@nexus-marketplace": [
+                        {
+                            "scope": "user",
+                            "installPath": str(claude_root),
+                            "version": "1.35.0",
+                        }
+                    ]
+                },
+            }
+        ),
+    )
+
+    codex_root = tmp_path / ".codex" / "plugins" / "nexus"
+    _write(
+        codex_root / "skills" / "planning" / "SKILL.md",
+        "---\nname: Nexus Planning\ndescription: Plan execution\n---\nProduce an execution plan.\n",
+    )
+    _write(
+        codex_root / "agents" / "architect.md",
+        "---\nname: Nexus Architect\ndescription: Maps architecture\n---\nMap system boundaries.\n",
+    )
+    disabled_root = tmp_path / ".codex" / "plugins" / "disabled"
+    _write(
+        disabled_root / "skills" / "hidden" / "SKILL.md",
+        "---\nname: Disabled Skill\n---\nDo not discover.\n",
+    )
+    _write(
+        tmp_path / ".codex" / "plugins" / "cache" / "unused-market" / "stale" / "1.0" / "skills" / "old" / "SKILL.md",
+        "---\nname: Stale Skill\n---\nDo not discover.\n",
+    )
+    _write(
+        tmp_path / ".codex" / "config.toml",
+        '[plugins."nexus@codex-marketplace-global"]\nenabled = true\n\n'
+        '[plugins."disabled@marketplace"]\nenabled = false\n',
+    )
+
+    result = discover_capabilities(tmp_path)
+    by_name = {item.name: item for item in result.items}
+
+    assert {"Nexus Incident", "Nexus Reviewer", "Nexus Planning", "Nexus Architect"} <= by_name.keys()
+    assert "Disabled Skill" not in by_name
+    assert "Stale Skill" not in by_name
+    assert by_name["Nexus Incident"].source_scope == "plugin"
+    assert by_name["Nexus Incident"].source_metadata["plugin"] == "nexus@nexus-marketplace"
+    assert by_name["Nexus Reviewer"].payload["backend"] == "claude_code"
+    assert by_name["Nexus Architect"].payload["backend"] == "codex"
+    assert by_name["Nexus Planning"].preview["plugin"] == "nexus@codex-marketplace-global"
+    assert result.warnings == []
+
+
 def _build_app(override_get_db) -> FastAPI:
     app = FastAPI()
     app.include_router(capability_imports.router, prefix="/api")

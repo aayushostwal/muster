@@ -9,6 +9,9 @@ The global Agent, Skill, and MCP registry pages include an import workflow
 that scans the local user-level Claude Code and Codex environments through the
 native backend. It supports source/type filtering, redacted configuration
 previews, collision warnings, bulk selection, and idempotent re-sync.
+Capabilities from enabled marketplace packages, including Nexus, appear with
+a **Plugin** badge in the same picker; select them and use **Import selected**
+exactly like user-authored capabilities.
 
 ## Local development
 

@@ -128,6 +128,12 @@ GET    /api/tasks/{id}/invocations         -> backend session ids and per-invoca
 GET    /api/tasks/{id}/events              -> structured tools, diffs, reasoning, logs, and sub-agent activity
 ```
 
+Capability discovery covers direct user resources plus active marketplace
+plugin roots. Claude roots come from
+`~/.claude/plugins/installed_plugins.json`; Codex roots come from enabled
+`[plugins]` entries in `~/.codex/config.toml`. Unconfigured cache entries and
+marketplace source repositories are ignored.
+
 ### WebSocket
 
 ```
