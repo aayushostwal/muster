@@ -5,6 +5,10 @@ TypeScript, Tailwind CSS, Framer Motion, and TanStack Query. It provides the
 project dashboard, capability management, live task board, and streaming agent
 console.
 
+Task responses render GitHub-flavored Markdown, including tables, task lists,
+links, block quotes, and fenced code blocks with one-click copy. Raw HTML is
+not interpreted.
+
 The global Agent, Skill, and MCP registry pages include an import workflow
 that scans the local user-level Claude Code and Codex environments through the
 native backend. It supports source/type filtering, redacted configuration
