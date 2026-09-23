@@ -9,6 +9,12 @@ Task responses render GitHub-flavored Markdown, including tables, task lists,
 links, block quotes, and fenced code blocks with one-click copy. Raw HTML is
 not interpreted.
 
+The default task view is a live terminal transcript. It opens at the latest
+turn, follows new output while the reader remains near the bottom, and offers
+a jump-to-latest control after scrolling into history. Earlier assistant
+updates in a turn collapse behind an expandable progress row so the most
+recent response remains prominent.
+
 The global Agent, Skill, and MCP registry pages include an import workflow
 that scans the local user-level Claude Code and Codex environments through the
 native backend. It supports source/type filtering, redacted configuration
