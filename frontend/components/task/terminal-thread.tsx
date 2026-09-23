@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } fr
 
 import { MarkdownContent } from "@/components/ui/markdown-content";
 import { Skeleton } from "@/components/ui/states";
-import type { Message, Task } from "@/lib/types";
+import type { Message, Task, TaskInvocation } from "@/lib/types";
 import { backendLabel, cn, formatDateTime } from "@/lib/utils";
 
 type ThreadItem =
@@ -25,17 +25,22 @@ type ThreadItem =
 export function TerminalThread({
   task,
   messages,
+  invocations,
   loading,
 }: {
   task: Task;
   messages: Message[];
+  invocations: TaskInvocation[];
   loading: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const initializedRef = useRef(false);
   const [showLatest, setShowLatest] = useState(false);
-  const items = useMemo(() => collapseIntermediateResponses(messages), [messages]);
+  const items = useMemo(
+    () => collapseIntermediateResponses(messages, invocations),
+    [invocations, messages],
+  );
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -274,9 +279,13 @@ function WorkingLine({ backend }: { backend: Task["backend"] }) {
   );
 }
 
-function collapseIntermediateResponses(messages: Message[]): ThreadItem[] {
+function collapseIntermediateResponses(
+  messages: Message[],
+  invocations: TaskInvocation[],
+): ThreadItem[] {
   const items: ThreadItem[] = [];
   let agentMessages: Message[] = [];
+  let activeInvocation: string | null = null;
 
   const flushAgents = () => {
     if (agentMessages.length > 1) {
@@ -289,10 +298,14 @@ function collapseIntermediateResponses(messages: Message[]): ThreadItem[] {
     const latest = agentMessages.at(-1);
     if (latest) items.push({ type: "message", message: latest });
     agentMessages = [];
+    activeInvocation = null;
   };
 
   for (const message of messages) {
     if (message.sender === "agent" && !message.is_blocking_question) {
+      const invocation = invocationForMessage(message, invocations);
+      if (agentMessages.length > 0 && invocation !== activeInvocation) flushAgents();
+      activeInvocation = invocation;
       agentMessages.push(message);
       continue;
     }
@@ -301,6 +314,19 @@ function collapseIntermediateResponses(messages: Message[]): ThreadItem[] {
   }
   flushAgents();
   return items;
+}
+
+function invocationForMessage(message: Message, invocations: TaskInvocation[]): string {
+  const createdAt = Date.parse(message.created_at);
+  const match = invocations
+    .slice()
+    .reverse()
+    .find((invocation) => {
+      const startedAt = Date.parse(invocation.started_at);
+      const completedAt = invocation.completed_at ? Date.parse(invocation.completed_at) : Infinity;
+      return createdAt >= startedAt && createdAt <= completedAt;
+    });
+  return match?.id ?? "unscoped";
 }
 
 export function TerminalFrame({ children }: { children: ReactNode }) {
