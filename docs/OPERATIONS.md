@@ -74,17 +74,17 @@ This runs `scripts/install.sh`, which:
    Python 3.12 runtime under `~/.muster`; it never replaces the system Python.
 3. Fetches source into a staging directory via Git clone or local checkout
    copy, verifies it, then atomically replaces `~/.muster/app`.
-4. Creates a fresh `~/.muster/venv`, verifies its interpreter is Python 3.11+
+4. Installs `musterctl` before runtime setup, so recovery and diagnostic
+   commands remain available if a later build, migration, or service step fails.
+5. Creates a fresh `~/.muster/venv`, verifies its interpreter is Python 3.11+
    and installs `backend/requirements.txt`.
-5. Runs `~/.muster/app/docker-compose.yml` in place so its frontend build
+6. Runs `~/.muster/app/docker-compose.yml` in place so its frontend build
    context resolves correctly, then starts Postgres and the frontend.
-6. Polls Postgres (`pg_isready`) until ready (default timeout 90s — no fixed
+7. Polls Postgres (`pg_isready`) until ready (default timeout 90s — no fixed
    sleep), then runs `alembic upgrade head` from the venv.
-7. Safely renders and starts the launchd agent (macOS) / systemd `--user` unit
+8. Safely renders and starts the launchd agent (macOS) / systemd `--user` unit
    (Linux), including the configured backend port and the installer's PATH so
    locally installed Claude and Codex commands remain discoverable.
-8. Installs `musterctl` to `/usr/local/bin` (or `~/.local/bin`, with a PATH
-   warning if needed).
 9. Prints a summary: frontend/backend URLs and next commands.
 
 ### Local dev (no install.sh)
