@@ -24,7 +24,7 @@ import { cn, initials } from "@/lib/utils";
 
 const MENTION_PATTERN = /(?:^|\s)@([^@\n]*)$/;
 
-export function GlobalTaskComposer() {
+export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [project, setProject] = useState<Project | null>(null);
@@ -175,16 +175,13 @@ export function GlobalTaskComposer() {
             whileTap={{ scale: 0.98 }}
             transition={{ type: "spring", stiffness: 430, damping: 32 }}
             onClick={() => setOpen(true)}
-            className="group flex h-12 items-center gap-3 rounded-2xl border border-signal-400/20 bg-ink-850/95 px-4 text-sm font-medium text-white shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+            className={cn("group flex h-12 items-center gap-3 rounded-2xl border border-signal-400/20 bg-ink-850/95 text-sm font-medium text-white shadow-[0_20px_60px_rgba(0,0,0,0.42)] backdrop-blur-xl", compact ? "w-12 justify-center px-0" : "px-4")}
             aria-label="Create a task from anywhere"
           >
             <span className="grid h-7 w-7 place-items-center rounded-lg bg-signal-400 text-ink-950 shadow-[0_0_20px_rgba(66,232,196,0.2)]">
               <Sparkles className="h-3.5 w-3.5" />
             </span>
-            New task
-            <kbd className="hidden rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[0.58rem] text-slate-500 group-hover:text-slate-300 sm:block">
-              ⌘ J
-            </kbd>
+            {!compact && <><span>New task</span><kbd className="hidden rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[0.58rem] text-slate-500 group-hover:text-slate-300 sm:block">⌘ J</kbd></>}
           </motion.button>
         ) : (
           <motion.section

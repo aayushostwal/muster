@@ -46,21 +46,21 @@ export function TaskTokenHud({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative shrink-0">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-haspopup="dialog"
         className={cn(
-          "flex h-9 items-center gap-2 rounded-xl border px-2.5 transition",
+          "flex h-9 items-center gap-2 rounded-xl border px-2.5 transition max-sm:w-9 max-sm:justify-center max-sm:px-0",
           open
             ? "border-signal-400/25 bg-signal-400/[0.075] text-signal-200"
             : "border-white/[0.08] bg-white/[0.025] text-slate-400 hover:border-white/15 hover:text-slate-200",
         )}
       >
         <Gauge className="h-3.5 w-3.5 text-signal-400" />
-        <span className="font-mono text-[0.68rem] font-medium tabular-nums">
+        <span className="hidden font-mono text-[0.68rem] font-medium tabular-nums sm:inline">
           {compact(activeUsed)}
         </span>
         <span className="hidden text-[0.58rem] text-slate-600 sm:inline">tokens</span>

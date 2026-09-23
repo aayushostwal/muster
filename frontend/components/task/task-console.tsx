@@ -10,6 +10,7 @@ import {
   Clock3,
   FileText,
   History,
+  MoreHorizontal,
   Network,
   RefreshCcw,
   RotateCcw,
@@ -57,6 +58,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
   const action = useMutation({ mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name), onSuccess: (updated) => { queryClient.setQueryData(["task", taskId], updated); toast("Task state updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
@@ -93,7 +95,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
 
         <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
         <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"}><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
-        <div className="flex shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5">
+        <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
           {current.status === "failed" && <Tooltip label="Retry now"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
           {(current.status === "done" || current.status === "cancelled") && <Tooltip label="Restart task"><Button size="icon" loading={action.isPending} onClick={() => action.mutate("restart")} aria-label="Restart task"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
           {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
@@ -101,6 +103,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
           <Tooltip label="Task controls"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Raw transcript"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
         </div>
+        <Button className="shrink-0 sm:hidden" size="icon" variant="ghost" onClick={() => setMobileActionsOpen(true)} aria-label="Open task actions"><MoreHorizontal className="h-4 w-4" /></Button>
       </header>
 
       {retrying && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-amber-400/15 bg-amber-400/[0.045] px-4 py-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-amber-400" /><p className="text-xs text-amber-100/70">Transient failure detected. Automatic retry scheduled in {latestAttempt.backoff_seconds} seconds.</p></div><Button size="sm" variant="ghost" onClick={() => action.mutate("retry-now")}>Retry now</Button></motion.div>}
@@ -115,6 +118,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <TaskSettings task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
       <TaskDetailsDrawer task={current} projectName={project.data?.name} attempts={attempts.data?.items ?? []} invocations={invocations.data?.items ?? []} open={detailsOpen} onClose={() => setDetailsOpen(false)} onOpenTranscript={() => { setDetailsOpen(false); setTranscriptOpen(true); }} />
+      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
     </div>
   );
 }
@@ -212,6 +216,47 @@ function TaskDetailsDrawer({
             </div>
           ) : <p className="mt-3 text-xs leading-5 text-slate-600">No failures or retries recorded for this task.</p>}
         </section>
+      </div>
+    </Drawer>
+  );
+}
+
+function TaskMobileActions({
+  task,
+  open,
+  busy,
+  onClose,
+  onAction,
+  onOpenDetails,
+  onOpenSettings,
+  onOpenTranscript,
+}: {
+  task: Task;
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onAction: (name: "cancel" | "restart" | "retry-now") => void;
+  onOpenDetails: () => void;
+  onOpenSettings: () => void;
+  onOpenTranscript: () => void;
+}) {
+  return (
+    <Drawer open={open} onClose={onClose} title="Task actions">
+      <div className="space-y-5">
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+          <div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", statusMeta[task.status].color, task.status === "running" && "animate-pulse")} /><span className="text-sm font-medium text-white">{statusMeta[task.status].label}</span></div>
+          <p className="mt-2 text-xs text-slate-600">{backendLabel(task.backend)} · {task.model || "Runtime default"}</p>
+        </div>
+        <div className="grid gap-2">
+          {task.status === "failed" && <Button variant="primary" loading={busy} onClick={() => onAction("retry-now")}><RefreshCcw className="h-4 w-4" /> Retry now</Button>}
+          {(task.status === "done" || task.status === "cancelled") && <Button loading={busy} onClick={() => onAction("restart")}><RotateCcw className="h-4 w-4" /> Restart task</Button>}
+          {(task.status === "running" || task.status === "queued" || task.status === "waiting_on_you") && <Button variant="danger" loading={busy} onClick={() => onAction("cancel")}><CircleStop className="h-4 w-4" /> Cancel task</Button>}
+        </div>
+        <div className="grid gap-2 border-t border-white/[0.07] pt-5">
+          <Button onClick={onOpenDetails}><History className="h-4 w-4" /> Run details</Button>
+          <Button onClick={onOpenSettings}><Settings2 className="h-4 w-4" /> Task controls</Button>
+          <Button onClick={onOpenTranscript}><FileText className="h-4 w-4" /> Raw transcript</Button>
+        </div>
       </div>
     </Drawer>
   );
