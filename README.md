@@ -67,6 +67,9 @@ the Next.js development server on port 5173, run `make up` rather than
 
 - Create a Task with a prompt, and the configured agent (Claude Code or
   Codex) starts on it immediately — no manual "run" step, ever.
+- Dispatch a Task from any screen with the compact global composer: type `@`
+  to choose exactly one Project, add the brief, and send without leaving the
+  current context.
 - Keep chatting with a Task the same way you'd chat with anything else;
   sending a message is what wakes the agent back up, whether it's idle,
   mid-run, or waiting on you.

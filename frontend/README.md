@@ -25,6 +25,13 @@ npm run build
 npm run check
 ```
 
+## Global task composer
+
+A persistent compact composer is available on every route. Open it from the
+floating action or with `Cmd/Ctrl+J`, type `@` to select one project, and send
+the execution brief with Enter. The new task inherits that project's
+runtime/model defaults and opens directly in its live task console.
+
 ## Runtime configuration
 
 The Docker image reads `MUSTER_API_URL` when the container starts and writes a
