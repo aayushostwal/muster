@@ -284,6 +284,10 @@ capability access), `/projects/:id/board` (task board), and `/tasks/:id`
 (compact chat, activity timeline, multi-agent view, invocation telemetry,
 model/thinking/context controls, and transcript).
 
+`AppShell` also mounts a route-independent task composer. It resolves one
+required `@project` mention, creates the task with that project's defaults,
+and navigates to its live console. `Cmd/Ctrl+J` opens and focuses it.
+
 API client: `frontend/lib/api.ts`, one typed function per endpoint above.
 Runtime deployments set `window.__MUSTER_API_URL__`; build-time deployments
 may set `NEXT_PUBLIC_API_URL`. The task stream is managed in

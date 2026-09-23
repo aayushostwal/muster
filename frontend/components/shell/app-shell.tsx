@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Logo } from "@/components/brand/logo";
+import { GlobalTaskComposer } from "@/components/task/global-task-composer";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { cn, initials } from "@/lib/utils";
@@ -134,6 +135,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main className={cn("min-h-screen pt-[var(--header-height)] transition-[padding] duration-300 ease-spring", collapsed ? "lg:pl-0" : "lg:pl-[var(--sidebar-width)]")}>{children}</main>
+      <GlobalTaskComposer />
 
       <AnimatePresence>
         {mobileOpen && (
