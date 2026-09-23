@@ -29,6 +29,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { MultiSelect, Select } from "@/components/ui/select";
 import { ErrorState, Skeleton } from "@/components/ui/states";
 import { Tooltip } from "@/components/ui/tooltip";
+import { MarkdownContent } from "@/components/ui/markdown-content";
 import { useToast } from "@/components/ui/toast";
 import { ActivityFeed, AgentActivity } from "@/components/task/activity-panels";
 import { useTaskStream } from "@/hooks/use-task-stream";
@@ -110,7 +111,7 @@ function MessageThread({ task, messages, loading }: { task: Task; messages: Mess
   return (
     <div className="h-full overflow-y-auto px-4 py-5 md:px-6" aria-live="polite">
       <div className="mx-auto max-w-3xl space-y-4">
-        <div className="rounded-xl border border-pulse-400/10 bg-pulse-400/[0.035] p-4"><div className="flex items-center gap-2 text-[0.66rem] font-semibold uppercase tracking-wider text-pulse-400"><Sparkles className="h-3.5 w-3.5" /> Initial brief</div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-300">{task.initial_prompt}</p></div>
+        <div className="rounded-xl border border-pulse-400/10 bg-pulse-400/[0.035] p-4"><div className="flex items-center gap-2 text-[0.66rem] font-semibold uppercase tracking-wider text-pulse-400"><Sparkles className="h-3.5 w-3.5" /> Initial brief</div><MarkdownContent content={task.initial_prompt} className="mt-2" /></div>
         <AnimatePresence initial={false}>
           {messages.map((message) => <MessageBubble key={message.id} message={message} backend={task.backend} />)}
         </AnimatePresence>
@@ -124,7 +125,7 @@ function MessageThread({ task, messages, loading }: { task: Task; messages: Mess
 function MessageBubble({ message, backend }: { message: Message; backend: Task["backend"] }) {
   if (message.sender === "system") return <motion.div layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-start gap-2 rounded-xl border border-amber-400/10 bg-amber-400/[0.025] px-3 py-2.5 text-[0.68rem] leading-5 text-amber-100/55"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" /><span className="whitespace-pre-wrap">{message.content_text}</span></motion.div>;
   const user = message.sender === "user";
-  return <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: message.optimistic ? 0.6 : 1, y: 0 }} className={cn("flex items-start gap-3", user && "flex-row-reverse")}><div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border", user ? "border-pulse-400/20 bg-pulse-400/10 text-pulse-400" : "border-signal-400/20 bg-signal-400/10 text-signal-400")}>{user ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}</div><div className={cn("max-w-[82%] rounded-2xl border px-4 py-3", user ? "rounded-tr-sm border-pulse-400/15 bg-pulse-400/[0.07]" : message.is_blocking_question ? "rounded-tl-sm border-amber-400/20 bg-amber-400/[0.055]" : "rounded-tl-sm border-white/[0.07] bg-white/[0.025]")}>{!user && <p className="mb-1.5 text-[0.56rem] font-semibold uppercase tracking-wider text-signal-400/70">{backendLabel(backend)} response</p>}<p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-300">{message.content_text}</p><p className="mt-2 font-mono text-[0.56rem] text-slate-700">{formatDateTime(message.created_at)}</p></div></motion.div>;
+  return <motion.div layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: message.optimistic ? 0.6 : 1, y: 0 }} className={cn("flex items-start gap-3", user && "flex-row-reverse")}><div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border", user ? "border-pulse-400/20 bg-pulse-400/10 text-pulse-400" : "border-signal-400/20 bg-signal-400/10 text-signal-400")}>{user ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}</div><div className={cn("max-w-[82%] rounded-2xl border px-4 py-3", user ? "rounded-tr-sm border-pulse-400/15 bg-pulse-400/[0.07]" : message.is_blocking_question ? "rounded-tl-sm border-amber-400/20 bg-amber-400/[0.055]" : "rounded-tl-sm border-white/[0.07] bg-white/[0.025]")}>{!user && <p className="mb-1.5 text-[0.56rem] font-semibold uppercase tracking-wider text-signal-400/70">{backendLabel(backend)} response</p>}<MarkdownContent content={message.content_text ?? ""} /><p className="mt-2 font-mono text-[0.56rem] text-slate-700">{formatDateTime(message.created_at)}</p></div></motion.div>;
 }
 
 function Composer({ taskId, status }: { taskId: string; status: TaskStatus }) {
