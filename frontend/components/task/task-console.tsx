@@ -3,18 +3,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
+  Activity,
   ArrowLeft,
   BrainCircuit,
   CircleStop,
   Clock3,
   FileText,
-  Gauge,
   History,
+  MoreHorizontal,
+  Network,
   RefreshCcw,
   RotateCcw,
   Send,
   Settings2,
   Sparkles,
+  TerminalSquare,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -28,10 +31,11 @@ import { ErrorState, Skeleton } from "@/components/ui/states";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useToast } from "@/components/ui/toast";
 import { ActivityFeed, AgentActivity } from "@/components/task/activity-panels";
+import { TaskTokenHud } from "@/components/task/task-token-hud";
 import { TerminalFrame, TerminalThread } from "@/components/task/terminal-thread";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { api } from "@/lib/api";
-import type { ListResponse, Message, Task, TaskInvocation, TaskStatus } from "@/lib/types";
+import type { ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus } from "@/lib/types";
 import { backendLabel, cn, formatDateTime, shortId } from "@/lib/utils";
 
 const statusMeta: Record<TaskStatus, { label: string; color: string }> = {
@@ -53,6 +57,8 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const { connection, tokenUsage } = useTaskStream(taskId);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
   const action = useMutation({ mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name), onSuccess: (updated) => { queryClient.setQueryData(["task", taskId], updated); toast("Task state updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
@@ -64,37 +70,55 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[92rem] flex-col overflow-hidden px-4 py-4 md:px-6">
-      <header className="surface flex flex-col justify-between gap-4 rounded-panel px-4 py-4 lg:flex-row lg:items-center lg:px-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link>
-          <div className="min-w-0"><div className="flex items-center gap-2"><h1 className="truncate text-base font-semibold text-white md:text-lg">{current.title}</h1><span className="hidden font-mono text-[0.58rem] text-slate-700 sm:inline">#{shortId(current.id)}</span></div><div className="mt-1.5 flex items-center gap-2 text-[0.66rem] text-slate-500"><span className={cn("h-1.5 w-1.5 rounded-full", statusMeta[current.status].color, current.status === "running" && "animate-pulse")} /><span>{statusMeta[current.status].label}</span><span className="text-slate-700">·</span><span>{backendLabel(current.backend)}</span>{current.model && <><span className="text-slate-700">·</span><span className="truncate">{current.model}</span></>}</div></div>
+    <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
+      <header className="surface flex min-h-14 shrink-0 items-center gap-2 rounded-xl px-2.5 py-2">
+        <Tooltip label="Back to board"><Link href={`/projects/${current.project_id}/board`} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.08] text-slate-500 transition hover:border-white/15 hover:text-white" aria-label="Back to task board"><ArrowLeft className="h-4 w-4" /></Link></Tooltip>
+        <div className="min-w-0 flex-1 px-1">
+          <div className="flex min-w-0 items-center gap-1.5 text-[0.62rem] text-slate-600">
+            <Link href={`/projects/${current.project_id}/board`} className="max-w-28 truncate transition hover:text-signal-300">{project.data?.name ?? "Project"}</Link>
+            <span className="text-slate-800">/</span>
+            <span className="font-mono text-[0.56rem] text-slate-700">{shortId(current.id)}</span>
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-sm font-semibold text-white">{current.title}</h1>
+            <span className="hidden shrink-0 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 text-[0.56rem] text-slate-500 md:inline-flex"><span className={cn("h-1.5 w-1.5 rounded-full", statusMeta[current.status].color, current.status === "running" && "animate-pulse")} />{statusMeta[current.status].label}</span>
+            <span className="hidden shrink-0 text-[0.6rem] text-slate-600 xl:inline">{backendLabel(current.backend)}{current.model ? ` · ${current.model}` : ""}</span>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {current.status === "failed" && <Button size="sm" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")}><RefreshCcw className="h-3.5 w-3.5" /> Retry now</Button>}
-          {(current.status === "done" || current.status === "cancelled") && <Button size="sm" loading={action.isPending} onClick={() => action.mutate("restart")}><RotateCcw className="h-3.5 w-3.5" /> Restart</Button>}
-          {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Button size="sm" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")}><CircleStop className="h-3.5 w-3.5" /> Cancel</Button>}
+
+        <nav className="hidden shrink-0 rounded-lg border border-white/[0.06] bg-black/15 p-1 lg:flex" aria-label="Task views">
+          {(["terminal", "activity", "agents"] as const).map((item) => {
+            const Icon = item === "terminal" ? TerminalSquare : item === "activity" ? Activity : Network;
+            return <button key={item} onClick={() => setView(item)} aria-pressed={view === item} className={cn("flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.64rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600 hover:text-slate-300")}><Icon className="h-3.5 w-3.5" />{item}{item === "activity" && events.data?.items.length ? <span className="font-mono text-[0.53rem] text-slate-600">{events.data.items.length}</span> : null}</button>;
+          })}
+        </nav>
+
+        <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
+        <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"}><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
+        <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
+          {current.status === "failed" && <Tooltip label="Retry now"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
+          {(current.status === "done" || current.status === "cancelled") && <Tooltip label="Restart task"><Button size="icon" loading={action.isPending} onClick={() => action.mutate("restart")} aria-label="Restart task"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
+          {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
+          <Tooltip label="Run details"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Task controls"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
-          <Tooltip label="Raw transcript"><Button size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
+          <Tooltip label="Raw transcript"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
         </div>
+        <Button className="shrink-0 sm:hidden" size="icon" variant="ghost" onClick={() => setMobileActionsOpen(true)} aria-label="Open task actions"><MoreHorizontal className="h-4 w-4" /></Button>
       </header>
 
       {retrying && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-amber-400/15 bg-amber-400/[0.045] px-4 py-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-amber-400" /><p className="text-xs text-amber-100/70">Transient failure detected. Automatic retry scheduled in {latestAttempt.backoff_seconds} seconds.</p></div><Button size="sm" variant="ghost" onClick={() => action.mutate("retry-now")}>Retry now</Button></motion.div>}
 
-      <div className="mt-4 grid min-h-0 flex-1 justify-center gap-4 xl:grid-cols-[minmax(0,52rem)_16rem]">
-        <section className="surface flex min-h-0 flex-col overflow-hidden rounded-panel">
-          <div className="flex flex-col justify-between gap-3 border-b border-white/[0.07] px-3 py-3 sm:flex-row sm:items-center"><div className="flex rounded-lg border border-white/[0.06] bg-black/15 p-1">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600 hover:text-slate-300")}>{item}{item === "activity" && events.data?.items.length ? <span className="ml-1.5 font-mono text-[0.55rem] text-slate-600">{events.data.items.length}</span> : null}</button>)}</div><div className={cn("flex items-center gap-1.5 px-1 text-[0.62rem]", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}{connection === "live" ? "Live" : connection === "connecting" ? "Connecting" : "Reconnecting"}</div></div>
+      <div className="mt-2 min-h-0 flex-1">
+        <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
+          <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>
           <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
           {view === "terminal" && <Composer taskId={taskId} status={current.status} />}
         </section>
-        <aside className="max-h-full space-y-3 overflow-y-auto pb-1">
-          <TelemetryCard tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
-          <div className="surface rounded-panel p-4"><div className="flex items-center gap-2 text-xs font-medium text-slate-300"><History className="h-4 w-4 text-pulse-400" /> Run history</div>{attempts.data?.items.length ? <div className="mt-4 space-y-3">{attempts.data.items.slice(-4).reverse().map((attempt) => <div key={attempt.id} className="border-l border-white/10 pl-3"><div className="flex items-center justify-between"><span className="font-mono text-[0.64rem] text-slate-400">Attempt {attempt.attempt_number}</span><span className={cn("text-[0.58rem] uppercase tracking-wider", attempt.failure_class === "transient" ? "text-amber-400" : "text-red-400")}>{attempt.failure_class || "started"}</span></div><p className="mt-1 line-clamp-2 text-[0.65rem] leading-4 text-slate-600">{attempt.error_message || "Agent process started"}</p></div>)}</div> : <p className="mt-4 text-[0.68rem] leading-5 text-slate-600">No failures or retries recorded for this task.</p>}</div>
-          <div className="surface rounded-panel p-4"><p className="text-[0.62rem] font-semibold uppercase tracking-wider text-slate-600">Project</p><p className="mt-2 truncate text-sm font-medium text-slate-200">{project.data?.name ?? "Loading project"}</p><p className="mt-1 text-[0.65rem] text-slate-600">Created {formatDateTime(current.created_at)}</p></div>
-        </aside>
       </div>
       <TaskSettings task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
+      <TaskDetailsDrawer task={current} projectName={project.data?.name} attempts={attempts.data?.items ?? []} invocations={invocations.data?.items ?? []} open={detailsOpen} onClose={() => setDetailsOpen(false)} onOpenTranscript={() => { setDetailsOpen(false); setTranscriptOpen(true); }} />
+      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
     </div>
   );
 }
@@ -111,11 +135,135 @@ function Composer({ taskId, status }: { taskId: string; status: TaskStatus }) {
   return <form onSubmit={submit} className="border-t border-white/[0.07] bg-black/10 p-3"><div className="mx-auto max-w-3xl"><div className="flex items-end gap-2 rounded-xl border border-white/10 bg-ink-950/70 p-1.5 transition focus-within:border-signal-400/30 focus-within:ring-4 focus-within:ring-signal-400/[0.05]"><textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows={1} className="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white placeholder:text-slate-700 focus:outline-none" placeholder={status === "waiting_on_you" ? "Respond to the agent" : "Send a follow-up instruction"} aria-label="Message agent" /><Button type="submit" size="icon" variant="primary" loading={send.isPending} disabled={!value.trim()} aria-label="Send message"><Send className="h-4 w-4" /></Button></div>{error && <p className="mt-2 text-xs text-red-400" role="alert">{error}</p>}<p className="mt-1.5 px-1 text-[0.56rem] text-slate-700">Enter to send · Shift + Enter for a new line</p></div></form>;
 }
 
-function TelemetryCard({ tokenUsage, task, invocations }: { tokenUsage: { used: number; limit: number } | null; task: Task; invocations: TaskInvocation[] }) {
-  const totals = invocations.reduce((sum, item) => ({ input: sum.input + item.input_tokens, output: sum.output + item.output_tokens, cached: sum.cached + item.cached_tokens }), { input: 0, output: 0, cached: 0 });
-  const used = tokenUsage?.used || totals.input + totals.output;
-  const percentage = tokenUsage?.limit ? Math.min((used / tokenUsage.limit) * 100, 100) : 0;
-  return <div className="surface rounded-panel p-4"><div className="flex items-center justify-between"><div className="flex items-center gap-2 text-xs font-medium text-slate-300"><Gauge className="h-4 w-4 text-signal-400" /> API tokens</div><span className="font-mono text-[0.6rem] text-slate-600">{tokenUsage?.limit ? `${Math.round(percentage)}%` : `${invocations.length} calls`}</span></div><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/[0.05]"><motion.div className="h-full rounded-full bg-gradient-to-r from-signal-500 to-pulse-500" animate={{ width: tokenUsage?.limit ? `${percentage}%` : used ? "100%" : "0%" }} /></div><div className="mt-3 grid grid-cols-3 gap-1 font-mono text-[0.56rem] text-slate-600"><span>{totals.input.toLocaleString()} in</span><span className="text-center">{totals.output.toLocaleString()} out</span><span className="text-right">{totals.cached.toLocaleString()} cache</span></div><div className="mt-4 border-t border-white/[0.06] pt-3"><div className="flex items-center justify-between text-[0.65rem]"><span className="text-slate-600">Strategy</span><span className="text-slate-300">{task.context_strategy}</span></div></div></div>;
+function TaskDetailsDrawer({
+  task,
+  projectName,
+  attempts,
+  invocations,
+  open,
+  onClose,
+  onOpenTranscript,
+}: {
+  task: Task;
+  projectName?: string;
+  attempts: RunAttempt[];
+  invocations: TaskInvocation[];
+  open: boolean;
+  onClose: () => void;
+  onOpenTranscript: () => void;
+}) {
+  const latestInvocation = invocations.at(-1);
+  return (
+    <Drawer open={open} onClose={onClose} title="Run details">
+      <div className="space-y-7">
+        <section>
+          <div className="flex items-center gap-2">
+            <History className="h-4 w-4 text-pulse-400" />
+            <h3 className="text-sm font-medium text-white">Task context</h3>
+          </div>
+          <dl className="mt-4 grid grid-cols-2 gap-2">
+            <Detail label="Project" value={projectName ?? "Loading project"} />
+            <Detail label="Status" value={statusMeta[task.status].label} />
+            <Detail label="Runtime" value={backendLabel(task.backend)} />
+            <Detail label="Model" value={task.model || "Runtime default"} />
+            <Detail label="Created" value={formatDateTime(task.created_at)} />
+            <Detail label="Context" value={task.context_strategy} />
+          </dl>
+          <div className="mt-2 rounded-xl border border-white/[0.06] bg-black/15 px-3 py-2.5">
+            <p className="text-[0.56rem] uppercase tracking-wider text-slate-700">Latest session ID</p>
+            <p className="mt-1 truncate font-mono text-[0.68rem] text-slate-400">{latestInvocation?.session_id || task.session_id || "Awaiting runtime session"}</p>
+          </div>
+          <Button className="mt-3 md:hidden" onClick={onOpenTranscript}><FileText className="h-4 w-4" /> Open raw transcript</Button>
+        </section>
+
+        <section className="border-t border-white/[0.07] pt-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-white">Invocations</h3>
+            <span className="font-mono text-[0.62rem] text-slate-600">{invocations.length} total</span>
+          </div>
+          {invocations.length ? (
+            <div className="mt-3 space-y-2">
+              {invocations.slice().reverse().map((invocation) => (
+                <div key={invocation.id} className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.018] px-3 py-2.5">
+                  <span className={cn("h-2 w-2 rounded-full", invocation.status === "running" ? "animate-pulse bg-signal-400" : invocation.status === "failed" ? "bg-red-400" : "bg-slate-600")} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-slate-300">Invocation {invocation.sequence}</p>
+                    <p className="mt-0.5 truncate text-[0.62rem] text-slate-600">{invocation.model || "Runtime default"} · {invocation.thinking_level || "default"} thinking</p>
+                  </div>
+                  <span className="font-mono text-[0.58rem] text-slate-700">{(invocation.input_tokens + invocation.output_tokens).toLocaleString()} tok</span>
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-3 text-xs text-slate-600">No runtime invocations yet.</p>}
+        </section>
+
+        <section className="border-t border-white/[0.07] pt-6">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium text-white">Retry history</h3>
+            <span className="font-mono text-[0.62rem] text-slate-600">{attempts.length} attempts</span>
+          </div>
+          {attempts.length ? (
+            <div className="mt-4 space-y-4">
+              {attempts.slice().reverse().map((attempt) => (
+                <div key={attempt.id} className="border-l border-white/10 pl-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-mono text-[0.66rem] text-slate-300">Attempt {attempt.attempt_number}</span>
+                    <span className={cn("text-[0.56rem] uppercase tracking-wider", attempt.failure_class === "transient" ? "text-amber-400" : attempt.failure_class ? "text-red-400" : "text-slate-600")}>{attempt.failure_class || "started"}</span>
+                  </div>
+                  <p className="mt-1 text-[0.66rem] leading-5 text-slate-600">{attempt.error_message || "Agent process started"}</p>
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-3 text-xs leading-5 text-slate-600">No failures or retries recorded for this task.</p>}
+        </section>
+      </div>
+    </Drawer>
+  );
+}
+
+function TaskMobileActions({
+  task,
+  open,
+  busy,
+  onClose,
+  onAction,
+  onOpenDetails,
+  onOpenSettings,
+  onOpenTranscript,
+}: {
+  task: Task;
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onAction: (name: "cancel" | "restart" | "retry-now") => void;
+  onOpenDetails: () => void;
+  onOpenSettings: () => void;
+  onOpenTranscript: () => void;
+}) {
+  return (
+    <Drawer open={open} onClose={onClose} title="Task actions">
+      <div className="space-y-5">
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+          <div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", statusMeta[task.status].color, task.status === "running" && "animate-pulse")} /><span className="text-sm font-medium text-white">{statusMeta[task.status].label}</span></div>
+          <p className="mt-2 text-xs text-slate-600">{backendLabel(task.backend)} · {task.model || "Runtime default"}</p>
+        </div>
+        <div className="grid gap-2">
+          {task.status === "failed" && <Button variant="primary" loading={busy} onClick={() => onAction("retry-now")}><RefreshCcw className="h-4 w-4" /> Retry now</Button>}
+          {(task.status === "done" || task.status === "cancelled") && <Button loading={busy} onClick={() => onAction("restart")}><RotateCcw className="h-4 w-4" /> Restart task</Button>}
+          {(task.status === "running" || task.status === "queued" || task.status === "waiting_on_you") && <Button variant="danger" loading={busy} onClick={() => onAction("cancel")}><CircleStop className="h-4 w-4" /> Cancel task</Button>}
+        </div>
+        <div className="grid gap-2 border-t border-white/[0.07] pt-5">
+          <Button onClick={onOpenDetails}><History className="h-4 w-4" /> Run details</Button>
+          <Button onClick={onOpenSettings}><Settings2 className="h-4 w-4" /> Task controls</Button>
+          <Button onClick={onOpenTranscript}><FileText className="h-4 w-4" /> Raw transcript</Button>
+        </div>
+      </div>
+    </Drawer>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2.5"><dt className="text-[0.56rem] uppercase tracking-wider text-slate-700">{label}</dt><dd className="mt-1 truncate text-xs text-slate-300">{value}</dd></div>;
 }
 
 function TaskSettings({ task, open, onClose }: { task: Task; open: boolean; onClose: () => void }) {

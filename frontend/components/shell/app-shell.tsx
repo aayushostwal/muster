@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Activity, Bot, Command, FolderCode, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Logo } from "@/components/brand/logo";
 import { GlobalTaskComposer } from "@/components/task/global-task-composer";
@@ -90,6 +90,8 @@ function SidebarContent({ close }: { close?: () => void }) {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const taskRoute = pathname.startsWith("/tasks/");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const health = useQuery({
@@ -111,7 +113,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" style={taskRoute ? ({ "--header-height": "3.25rem" } as CSSProperties) : undefined}>
       <aside className={cn("fixed inset-y-0 left-0 z-30 hidden border-r border-white/[0.07] bg-ink-950/80 backdrop-blur-xl transition-[width] duration-300 ease-spring lg:block", collapsed ? "w-0 overflow-hidden border-0" : "w-[var(--sidebar-width)]")}>
         <div className="w-[var(--sidebar-width)]"><SidebarContent /></div>
       </aside>
@@ -135,7 +137,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main className={cn("min-h-screen pt-[var(--header-height)] transition-[padding] duration-300 ease-spring", collapsed ? "lg:pl-0" : "lg:pl-[var(--sidebar-width)]")}>{children}</main>
-      <GlobalTaskComposer />
+      <GlobalTaskComposer compact={taskRoute} />
 
       <AnimatePresence>
         {mobileOpen && (

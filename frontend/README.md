@@ -15,6 +15,11 @@ a jump-to-latest control after scrolling into history. Earlier assistant
 updates in a turn collapse behind an expandable progress row so the most
 recent response remains prominent.
 
+Task metadata and controls share one compact command header: project/task
+identity, runtime state, view switching, live connection health, actions, and
+an expandable token HUD. Invocation and retry history move to the Run Details
+drawer, leaving the full content width for the terminal.
+
 The global Agent, Skill, and MCP registry pages include an import workflow
 that scans the local user-level Claude Code and Codex environments through the
 native backend. It supports source/type filtering, redacted configuration
