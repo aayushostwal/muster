@@ -83,6 +83,7 @@ class RunningProcess:
     stderr_buf: bytearray = field(default_factory=bytearray)
     blocking_question_hit: bool = False
     cancel_requested: bool = False
+    restart_requested: bool = False
     pending_tool_calls: dict[str, tuple[str, dict]] = field(default_factory=dict)
     permission_requests: set[str] = field(default_factory=set)
 
@@ -141,6 +142,97 @@ class ProcessManager:
         if pending is not None:
             pending.cancel()
         await self.trigger(task_id)
+
+    async def restart_from_beginning(self, task_id: uuid.UUID) -> None:
+        """Start the task's original brief in a new native CLI session.
+
+        This is intentionally different from retrying or sending a follow-up:
+        any live invocation is stopped, the backend resume handle is discarded,
+        and ``_spawn`` takes its fresh-session path using ``initial_prompt``.
+        Conversation and invocation history remain available for auditability.
+        """
+        async with self._lock_for(task_id):
+            pending_retry = self._pending_retries.pop(task_id, None)
+            if pending_retry is not None:
+                pending_retry.cancel()
+
+            running = self._running.get(task_id)
+            if running is not None:
+                # _on_process_exit must not classify this intentional stop as a
+                # user cancellation or schedule a retry before the fresh run.
+                running.restart_requested = True
+                if running.process.returncode is None:
+                    try:
+                        running.process.terminate()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            running.process.wait(), timeout=_FORCE_KILL_GRACE
+                        )
+                    except asyncio.TimeoutError:
+                        try:
+                            running.process.kill()
+                        except ProcessLookupError:
+                            pass
+                        await running.process.wait()
+                if (
+                    running.reader_task is not None
+                    and running.reader_task is not asyncio.current_task()
+                ):
+                    await running.reader_task
+
+            now = datetime.now(timezone.utc)
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None:
+                    logger.warning("restart requested for unknown task %s", task_id)
+                    return
+
+                task.status = TaskStatus.queued
+                task.session_id = None
+                task.started_at = None
+                task.completed_at = None
+
+                pending_approvals = (
+                    await db.execute(
+                        select(ToolApprovalRequest).where(
+                            ToolApprovalRequest.task_id == task_id,
+                            ToolApprovalRequest.status == "pending",
+                        )
+                    )
+                ).scalars().all()
+                for approval in pending_approvals:
+                    approval.status = "superseded"
+                    approval.resolution_scope = "restart"
+                    approval.resolved_at = now
+
+                message = Message(
+                    task_id=task_id,
+                    sender=MessageSender.system,
+                    content_text=(
+                        "Restarted from the beginning in a new agent session. "
+                        "The original brief is being sent again."
+                    ),
+                )
+                db.add(message)
+                await db.commit()
+                await db.refresh(message)
+                for approval in pending_approvals:
+                    await db.refresh(approval)
+
+            await self._append_transcript(task_id, "system", message.content_text or "")
+            await broadcast(task_id, {"type": "status", "status": TaskStatus.queued.value})
+            await broadcast(
+                task_id, {"type": "message", "message": _serialize_message(message)}
+            )
+            for approval in pending_approvals:
+                await broadcast(
+                    task_id,
+                    {"type": "tool_approval", "approval": _serialize_tool_approval(approval)},
+                )
+
+            await self._spawn(task_id)
 
     async def resume_after_approval(self, task_id: uuid.UUID) -> None:
         """Stop an approval-blocked CLI turn, then resume it with the new rule set."""
@@ -698,7 +790,13 @@ class ProcessManager:
         async with SessionLocal() as db:
             invocation = await db.get(TaskInvocation, running.invocation_id)
             if invocation is not None:
-                invocation.status = "cancelled" if running.cancel_requested else "completed" if exit_code == 0 else "failed"
+                invocation.status = (
+                    "cancelled"
+                    if running.cancel_requested or running.restart_requested
+                    else "completed"
+                    if exit_code == 0
+                    else "failed"
+                )
                 invocation.completed_at = datetime.now(timezone.utc)
                 await db.commit()
                 await db.refresh(invocation)
@@ -707,6 +805,10 @@ class ProcessManager:
 
         if running.cancel_requested:
             await self._set_status(task_id, TaskStatus.cancelled, completed=True)
+            return
+
+        if running.restart_requested:
+            # restart_from_beginning owns the next status transition and spawn.
             return
 
         if running.blocking_question_hit:

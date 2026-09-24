@@ -28,6 +28,7 @@ import { useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
+import { Modal } from "@/components/ui/modal";
 import { MultiSelect, Select } from "@/components/ui/select";
 import { ErrorState, Skeleton } from "@/components/ui/states";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -67,10 +68,22 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [restartOpen, setRestartOpen] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
-  const action = useMutation({ mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name), onSuccess: (updated) => { queryClient.setQueryData(["task", taskId], updated); toast("Task state updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
+  const action = useMutation({
+    mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name),
+    onSuccess: (updated, name) => {
+      queryClient.setQueryData(["task", taskId], updated);
+      queryClient.invalidateQueries({ queryKey: ["messages", taskId] });
+      queryClient.invalidateQueries({ queryKey: ["invocations", taskId] });
+      queryClient.invalidateQueries({ queryKey: ["tool-approvals", taskId] });
+      if (name === "restart") setRestartOpen(false);
+      toast(name === "restart" ? "New session started from the original brief" : "Task state updated", "success");
+    },
+    onError: (error: Error) => toast(error.message, "error"),
+  });
 
   if (task.isPending) return <div className="mx-auto max-w-screen-2xl space-y-4 p-5 md:p-8"><Skeleton className="h-24" /><Skeleton className="h-[36rem]" /></div>;
   if (task.isError) return <div className="mx-auto max-w-3xl p-6"><ErrorState message={task.error.message} retry={() => task.refetch()} /></div>;
@@ -108,7 +121,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"} side="bottom"><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
         <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
           {current.status === "failed" && <Tooltip label="Retry now" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
-          {(current.status === "done" || current.status === "cancelled") && <Tooltip label="Restart task" side="bottom"><Button size="icon" loading={action.isPending} onClick={() => action.mutate("restart")} aria-label="Restart task"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
+          <Tooltip label="Restart from beginning" side="bottom"><Button size="icon" loading={action.isPending && action.variables === "restart"} onClick={() => setRestartOpen(true)} aria-label="Restart task from beginning"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>
           {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task" side="bottom"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => action.mutate("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
           <Tooltip label="Run details" side="bottom"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Task controls" side="bottom"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
@@ -131,7 +144,8 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <TaskSettings task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
       <TaskDetailsDrawer task={current} projectName={project.data?.name} attempts={attempts.data?.items ?? []} invocations={invocations.data?.items ?? []} open={detailsOpen} onClose={() => setDetailsOpen(false)} onOpenTranscript={() => { setDetailsOpen(false); setTranscriptOpen(true); }} />
-      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
+      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); if (name === "restart") setRestartOpen(true); else action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
+      <RestartTaskModal task={current} open={restartOpen} busy={action.isPending && action.variables === "restart"} onClose={() => setRestartOpen(false)} onConfirm={() => action.mutate("restart")} />
     </div>
   );
 }
@@ -320,7 +334,7 @@ function TaskMobileActions({
         </div>
         <div className="grid gap-2">
           {task.status === "failed" && <Button variant="primary" loading={busy} onClick={() => onAction("retry-now")}><RefreshCcw className="h-4 w-4" /> Retry now</Button>}
-          {(task.status === "done" || task.status === "cancelled") && <Button loading={busy} onClick={() => onAction("restart")}><RotateCcw className="h-4 w-4" /> Restart task</Button>}
+          <Button loading={busy} onClick={() => onAction("restart")}><RotateCcw className="h-4 w-4" /> Restart from beginning</Button>
           {(task.status === "running" || task.status === "queued" || task.status === "waiting_on_you") && <Button variant="danger" loading={busy} onClick={() => onAction("cancel")}><CircleStop className="h-4 w-4" /> Cancel task</Button>}
         </div>
         <div className="grid gap-2 border-t border-white/[0.07] pt-5">
@@ -330,6 +344,46 @@ function TaskMobileActions({
         </div>
       </div>
     </Drawer>
+  );
+}
+
+function RestartTaskModal({
+  task,
+  open,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  task: Task;
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const active = task.status === "running" || task.status === "queued" || task.status === "waiting_on_you";
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Restart from the beginning?"
+      description="Muster will create a new agent session and send the original brief as its first prompt."
+    >
+      <div className="space-y-5">
+        <div className="rounded-xl border border-white/[0.08] bg-black/15 p-4">
+          <p className="text-[0.6rem] font-medium uppercase tracking-[0.16em] text-signal-400">Original brief</p>
+          <p className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap text-sm leading-6 text-slate-300">{task.initial_prompt}</p>
+        </div>
+        <ul className="space-y-2 text-xs leading-5 text-slate-500">
+          {active && <li>The current invocation will be stopped before the new one starts.</li>}
+          <li>The saved Claude Code or Codex session ID will not be reused.</li>
+          <li>Existing messages, activity, and invocation history will remain visible.</li>
+        </ul>
+        <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-5">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Keep current session</Button>
+          <Button variant="primary" onClick={onConfirm} loading={busy}><RotateCcw className="h-4 w-4" /> Restart from beginning</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

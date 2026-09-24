@@ -1,6 +1,6 @@
-"""Tests for /api/projects/{id}/tasks and /api/tasks/{id}/messages.
+"""Tests for task creation, messaging, and lifecycle actions.
 
-process_manager.trigger is monkeypatched with an AsyncMock: the real
+process_manager methods are monkeypatched with AsyncMocks: the real
 process_manager (backend/app/services/process_manager.py) spawns actual
 agent subprocesses and is owned/implemented by another agent concurrently,
 so these tests only assert that the routes call into it correctly.
@@ -163,3 +163,32 @@ async def test_posting_a_message_persists_it_and_triggers_process_manager(
         assert enriched_prompt.startswith("here is more context")
         assert "absolute source of truth" in enriched_prompt
         assert "Current source of truth." in enriched_prompt
+
+
+@pytest.mark.asyncio
+async def test_restart_uses_fresh_session_lifecycle_operation(override_get_db, monkeypatch):
+    from app.services.process_manager import process_manager
+
+    trigger_mock = AsyncMock()
+    restart_mock = AsyncMock()
+    monkeypatch.setattr(process_manager, "trigger", trigger_mock)
+    monkeypatch.setattr(process_manager, "restart_from_beginning", restart_mock)
+
+    app = _build_app(override_get_db)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        project = await client.post(
+            "/api/projects",
+            json={"name": "Demo Project", "default_backend": "claude_code"},
+        )
+        task = await client.post(
+            f"/api/projects/{project.json()['id']}/tasks",
+            json={"title": "Start again", "initial_prompt": "the original brief"},
+        )
+        task_id = task.json()["id"]
+
+        response = await client.post(f"/api/tasks/{task_id}/restart")
+
+    assert response.status_code == 200
+    restart_mock.assert_awaited_once_with(uuid.UUID(task_id))
+    assert trigger_mock.await_count == 1  # creation only; restart owns its spawn atomically

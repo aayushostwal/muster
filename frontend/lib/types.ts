@@ -123,8 +123,8 @@ export interface ToolApproval {
   tool_input: Record<string, unknown>;
   permission_rule: ToolRuleConfig;
   reason: string | null;
-  status: "pending" | "approved_once" | "approved_project" | "denied" | "consumed";
-  resolution_scope: "once" | "project" | null;
+  status: "pending" | "approved_once" | "approved_project" | "denied" | "consumed" | "superseded";
+  resolution_scope: "once" | "project" | "restart" | null;
   created_at: string;
   resolved_at: string | null;
 }
