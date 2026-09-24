@@ -5,12 +5,30 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.models import AgentBackend, TaskStatus
 
 
-class TaskCreate(BaseModel):
+class TaskTagsMixin(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            clean = " ".join(value.strip().split())
+            if not clean:
+                continue
+            if len(clean) > 32:
+                raise ValueError("Task tags must be 32 characters or fewer")
+            if clean.lower() not in {item.lower() for item in normalized}:
+                normalized.append(clean)
+        return normalized
+
+
+class TaskCreate(TaskTagsMixin):
     title: str
     initial_prompt: str
     backend: AgentBackend | None = None
@@ -38,6 +56,10 @@ class TaskContextStrategyUpdate(BaseModel):
     context_strategy: str
 
 
+class TaskTagsUpdate(TaskTagsMixin):
+    pass
+
+
 class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -49,6 +71,7 @@ class TaskRead(BaseModel):
     backend: AgentBackend
     model: str | None
     fallback_models: list[str]
+    tags: list[str]
     thinking_level: str
     agent_id: uuid.UUID | None
     context_strategy: str

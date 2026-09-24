@@ -46,13 +46,18 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
 
         resp = await client.post(
             f"/api/projects/{project_id}/tasks",
-            json={"title": "Do the thing", "initial_prompt": "please do the thing"},
+            json={
+                "title": "Do the thing",
+                "initial_prompt": "please do the thing",
+                "tags": ["PR Raised", "Canvas", "pr RAISED"],
+            },
         )
         assert resp.status_code == 201
         task = resp.json()
         assert task["status"] == "queued"
         assert task["backend"] == "claude_code"
         assert task["project_id"] == project_id
+        assert task["tags"] == ["PR Raised", "Canvas"]
 
         trigger_mock.assert_awaited_once()
         awaited_task_id = trigger_mock.await_args.args[0]
@@ -77,6 +82,13 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
         resp = await client.get(f"/api/tasks/{task['id']}")
         assert resp.status_code == 200
         assert resp.json()["id"] == task["id"]
+
+        resp = await client.patch(
+            f"/api/tasks/{task['id']}/tags",
+            json={"tags": ["PR Reviewed", "Canvas"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tags"] == ["PR Reviewed", "Canvas"]
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,9 @@ the Next.js development server on port 5173, run `make up` rather than
   provenance and explicit re-sync; Muster never rewrites native CLI config.
 - Inspect every invocation's native Claude/Codex session id, API token usage,
   tool calls, diffs, reasoning, runtime logs, and delegated-agent activity.
+- Triage work from a live task command center with attention queues, delivery
+  metrics, dense list and grouped gallery views, saved density preferences,
+  and filterable workflow tags such as PR Raised, PR Reviewed, and Canvas.
 - Select an ordered model chain from the live local CLI catalog, tune thinking
   effort, and switch context strategy without losing conversation history.
 - Schedule recurring agent runs with Cron Jobs — they land on the same

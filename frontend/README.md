@@ -5,6 +5,11 @@ TypeScript, Tailwind CSS, Framer Motion, and TanStack Query. It provides the
 project dashboard, capability management, live task board, and streaming agent
 console.
 
+The task command center uses full-width status lanes rather than fixed empty
+Kanban columns. It includes attention triage, completion metrics, a dense list
+for high-volume projects, saved card density, runtime/model/timing signals,
+and filterable task workflow tags.
+
 Task responses render GitHub-flavored Markdown, including tables, task lists,
 links, block quotes, and fenced code blocks with one-click copy. Raw HTML is
 not interpreted.

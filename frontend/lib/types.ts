@@ -39,6 +39,7 @@ export interface Task {
   backend: AgentBackend;
   model: string | null;
   fallback_models: string[];
+  tags: string[];
   thinking_level: string;
   agent_id: string | null;
   context_strategy: string;

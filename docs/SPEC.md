@@ -101,7 +101,7 @@ POST   /api/projects/{id}/cron-jobs/{cron_id}/disable
 DELETE /api/projects/{id}/cron-jobs/{cron_id}
 
 GET    /api/projects/{id}/tasks            ?status=<TaskStatus>  # for the Kanban board
-POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, model?, fallback_models?, thinking_level?, agent_id?, context_strategy?, media?}
+POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, model?, fallback_models?, tags?, thinking_level?, agent_id?, context_strategy?, media?}
                                             -> creates Task(status=queued), immediately calls
                                                process_manager.trigger(task) (fire-and-forget), 201
 
@@ -113,6 +113,7 @@ PATCH  /api/tasks/{id}/model               {model}       # switch model mid-conv
 PATCH  /api/tasks/{id}/models              {models}      # ordered primary/fallback model chain
 PATCH  /api/tasks/{id}/thinking-level      {thinking_level}
 PATCH  /api/tasks/{id}/context-strategy    {context_strategy}
+PATCH  /api/tasks/{id}/tags                {tags}         # up to 8 workflow labels, 32 characters each
 POST   /api/tasks/{id}/compress-context    -> creates ContextSnapshot, summarizing all Messages
                                                older than the most recent N turns via the task's
                                                own backend in a one-shot summarization call

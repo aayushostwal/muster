@@ -170,6 +170,7 @@ class Task(Base):
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     fallback_models: Mapped[list] = mapped_column(JSON, default=list)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
     thinking_level: Mapped[str] = mapped_column(String(20), default="medium")
     agent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("agent_profiles.id", ondelete="SET NULL"), nullable=True
