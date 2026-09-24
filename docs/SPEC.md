@@ -189,6 +189,13 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
    - on nonzero exit, classifies the failure (see Failure Handling) and
      either schedules a retry or flips to `failed` and waits.
 
+Each subprocess starts in its own process group, stdout/stderr are drained
+concurrently with an 8 MiB per-event stream limit, and a watchdog enforces
+startup, idle, and total-runtime deadlines. Stopping a task terminates the
+whole process group so shell and MCP children cannot become orphans. On API
+startup, database rows left `running` by a prior crash are changed to
+`waiting_on_you` and their open invocation is marked `interrupted`.
+
 `switch_backend(task_id, backend)` stops any active invocation, supersedes
 pending runtime-specific approvals, clears the native session id, selected
 agent, and model chain, then starts the destination runtime in a fresh native
@@ -200,9 +207,9 @@ available for audit and are rendered with their original runtime labels.
 
 `base.py` defines `class AgentBackendAdapter(Protocol)` with:
 ```python
-def build_command(self, task, project, bindings, secrets, prompt: str | None = None) -> list[str]: ...
+def build_command(self, task, project, bindings, secrets, prompt: str | None = None) -> BackendCommand: ...
 def parse_line(self, raw: str) -> ParsedEvent | None: ...   # -> AgentText | BlockingQuestion | SessionId | Done | ErrorEvent
-def resume_command(self, task, project, bindings, secrets, session_id: str) -> list[str]: ...
+def resume_command(self, task, project, bindings, secrets, session_id: str) -> BackendCommand: ...
 ```
 
 `claude_code.py` (`ClaudeCodeAdapter`):
@@ -223,9 +230,10 @@ def resume_command(self, task, project, bindings, secrets, session_id: str) -> l
   resolution resumes the same native session with the chosen rule in force.
 
 `codex.py` (`CodexAdapter`):
-- Uses `codex exec "<prompt>" --json --sandbox workspace-write --cd <primary>`
-  with repeated `--add-dir` flags for the first turn, and `codex exec resume
-  <session_id> "<prompt>" --json` for continued turns. Project command-prefix
+- Uses `codex exec - --json --sandbox workspace-write --cd <primary>` with
+  the complete prompt written to stdin, repeated `--add-dir` flags for the
+  first turn, and `codex exec resume <session_id> - --json` for continued
+  turns. Project command-prefix
   permissions are rendered into a disposable `CODEX_HOME` rules overlay that
   links the user's auth, config, and sessions, so Muster never edits global
   Codex configuration.

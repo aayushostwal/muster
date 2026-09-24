@@ -10,8 +10,10 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import shlex
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -87,6 +89,11 @@ class RunningProcess:
     switch_requested: bool = False
     pending_tool_calls: dict[str, tuple[str, dict]] = field(default_factory=dict)
     permission_requests: set[str] = field(default_factory=set)
+    watchdog_task: asyncio.Task | None = None
+    started_monotonic: float = field(default_factory=time.monotonic)
+    last_activity_monotonic: float = field(default_factory=time.monotonic)
+    received_event: bool = False
+    failure_reason: str | None = None
 
 
 class ProcessManager:
@@ -114,6 +121,65 @@ class ProcessManager:
                 return
             await self._spawn(task_id)
 
+    async def reconcile_interrupted_tasks(self) -> int:
+        """Move database-only `running` rows to an actionable state on startup."""
+        now = datetime.now(timezone.utc)
+        message_text = (
+            "Muster restarted while this agent invocation was running. The prior runtime "
+            "is no longer attached; review the task and send a message to continue."
+        )
+        async with SessionLocal() as db:
+            tasks = (
+                await db.execute(select(Task).where(Task.status == TaskStatus.running))
+            ).scalars().all()
+            if not tasks:
+                return 0
+            task_ids = [task.id for task in tasks]
+            invocations = (
+                await db.execute(
+                    select(TaskInvocation).where(
+                        TaskInvocation.task_id.in_(task_ids),
+                        TaskInvocation.status == "running",
+                    )
+                )
+            ).scalars().all()
+            for task in tasks:
+                task.status = TaskStatus.waiting_on_you
+                task.completed_at = None
+                db.add(
+                    Message(
+                        task_id=task.id,
+                        sender=MessageSender.system,
+                        content_text=message_text,
+                    )
+                )
+            for invocation in invocations:
+                invocation.status = "interrupted"
+                invocation.completed_at = now
+            await db.commit()
+        for task_id in task_ids:
+            await self._append_transcript(task_id, "system", message_text)
+        logger.warning("reconciled %d interrupted task(s)", len(task_ids))
+        return len(task_ids)
+
+    async def shutdown(self) -> None:
+        """Stop every managed runtime so child processes cannot outlive Muster."""
+        active = list(self._running.values())
+        for running in active:
+            if running.process.returncode is None:
+                running.failure_reason = "Muster shut down while the agent runtime was active."
+        await asyncio.gather(
+            *(self._terminate_process_tree(running.process) for running in active),
+            return_exceptions=True,
+        )
+        readers = [
+            running.reader_task
+            for running in active
+            if running.reader_task is not None and not running.reader_task.done()
+        ]
+        if readers:
+            await asyncio.gather(*readers, return_exceptions=True)
+
     async def cancel(self, task_id: uuid.UUID) -> None:
         pending = self._pending_retries.pop(task_id, None)
         if pending is not None:
@@ -127,11 +193,7 @@ class ProcessManager:
             # its normal done/failed/retry classification.
             running.cancel_requested = True
             if running.process.returncode is None:
-                try:
-                    running.process.terminate()
-                except ProcessLookupError:
-                    pass
-                asyncio.create_task(self._force_kill_later(running.process))
+                asyncio.create_task(self._terminate_process_tree(running.process))
             return
 
         # No live process (task already finished, or is waiting_on_you /
@@ -163,20 +225,7 @@ class ProcessManager:
                 # user cancellation or schedule a retry before the fresh run.
                 running.restart_requested = True
                 if running.process.returncode is None:
-                    try:
-                        running.process.terminate()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await asyncio.wait_for(
-                            running.process.wait(), timeout=_FORCE_KILL_GRACE
-                        )
-                    except asyncio.TimeoutError:
-                        try:
-                            running.process.kill()
-                        except ProcessLookupError:
-                            pass
-                        await running.process.wait()
+                    await self._terminate_process_tree(running.process)
                 if (
                     running.reader_task is not None
                     and running.reader_task is not asyncio.current_task()
@@ -263,20 +312,7 @@ class ProcessManager:
                 # intentionally replaced by a fresh backend invocation.
                 running.switch_requested = True
                 if running.process.returncode is None:
-                    try:
-                        running.process.terminate()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        await asyncio.wait_for(
-                            running.process.wait(), timeout=_FORCE_KILL_GRACE
-                        )
-                    except asyncio.TimeoutError:
-                        try:
-                            running.process.kill()
-                        except ProcessLookupError:
-                            pass
-                        await running.process.wait()
+                    await self._terminate_process_tree(running.process)
                 if (
                     running.reader_task is not None
                     and running.reader_task is not asyncio.current_task()
@@ -348,25 +384,34 @@ class ProcessManager:
         """Stop an approval-blocked CLI turn, then resume it with the new rule set."""
         running = self._running.get(task_id)
         if running is not None and running.process.returncode is None:
-            running.process.terminate()
-            try:
-                await asyncio.wait_for(running.process.wait(), timeout=_FORCE_KILL_GRACE)
-            except asyncio.TimeoutError:
-                running.process.kill()
-                await running.process.wait()
+            await self._terminate_process_tree(running.process)
             if running.reader_task is not None and running.reader_task is not asyncio.current_task():
                 await running.reader_task
         await self.trigger(task_id)
 
     @staticmethod
-    async def _force_kill_later(process: asyncio.subprocess.Process) -> None:
+    async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+        """Terminate the runtime session, including shell and MCP descendants."""
+        if process.returncode is not None:
+            return
+        try:
+            if os.name == "posix" and getattr(process, "pid", None):
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+        except ProcessLookupError:
+            return
         try:
             await asyncio.wait_for(process.wait(), timeout=_FORCE_KILL_GRACE)
         except asyncio.TimeoutError:
             try:
-                process.kill()
+                if os.name == "posix" and getattr(process, "pid", None):
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
             except ProcessLookupError:
-                pass
+                return
+            await process.wait()
 
     # -- spawn / continue -----------------------------------------------
 
@@ -455,7 +500,7 @@ class ProcessManager:
         await broadcast(task_id, {"type": "status", "status": TaskStatus.running.value})
 
         runtime_env = {**os.environ, **secrets}
-        runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd))
+        runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd.argv))
         if task.backend == AgentBackend.codex:
             codex_home = create_codex_home_overlay(bindings.tool_rules)
             if codex_home is not None:
@@ -464,12 +509,14 @@ class ProcessManager:
 
         try:
             process = await asyncio.create_subprocess_exec(
-                *cmd,
+                *cmd.argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.PIPE,
                 env=runtime_env,
                 cwd=bindings.primary_directory,
+                limit=settings.runtime_stream_limit_bytes,
+                start_new_session=(os.name == "posix"),
             )
         except OSError as exc:
             _cleanup_temp_paths(tuple(runtime_temp_paths))
@@ -489,16 +536,6 @@ class ProcessManager:
             await self._persist_and_broadcast_message(task_id, MessageSender.system, message)
             await self._set_status(task_id, TaskStatus.failed, completed=True)
             return
-        # The prompt is always passed via -p / the resumed invocation's
-        # argv, never stdin, and both CLIs are single-shot per invocation
-        # (see SPEC.md). An open-but-silent stdin pipe makes `claude` stall
-        # for several seconds waiting for input that will never arrive
-        # (observed: "Warning: no stdin data received in 3s..."), so close
-        # it immediately. `_deliver_to_running`'s best-effort stdin write
-        # becomes a no-op once this runs, which matches its own docstring.
-        if process.stdin is not None:
-            process.stdin.close()
-
         running = RunningProcess(
             process=process,
             invocation_id=invocation_id,
@@ -509,7 +546,21 @@ class ProcessManager:
         running.stderr_task = asyncio.create_task(
             self._read_stderr(task_id, invocation_id, process, running)
         )
+        running.watchdog_task = asyncio.create_task(self._watchdog(task_id, running))
         self._running[task_id] = running
+
+        # Start draining output before writing the prompt: large prompts and
+        # eager CLI diagnostics can otherwise fill opposing pipes and deadlock.
+        # Codex's documented `-` prompt source receives the complete prompt
+        # before EOF; Claude keeps its prompt in argv and receives EOF only.
+        if process.stdin is not None:
+            if cmd.stdin_payload is not None:
+                try:
+                    process.stdin.write(cmd.stdin_payload.encode("utf-8"))
+                    await process.stdin.drain()
+                except (ConnectionResetError, BrokenPipeError, RuntimeError):
+                    logger.warning("runtime closed stdin while receiving task %s", task_id)
+            process.stdin.close()
         if bindings.approval_ids:
             async with SessionLocal() as db:
                 approvals = (
@@ -777,6 +828,7 @@ class ProcessManager:
         assert process.stdout is not None
         try:
             async for raw_line in process.stdout:
+                running.last_activity_monotonic = time.monotonic()
                 line = raw_line.decode("utf-8", errors="replace")
                 try:
                     event = adapter.parse_line(line)
@@ -785,13 +837,16 @@ class ProcessManager:
                     continue
                 if event is None:
                     continue
+                running.received_event = True
                 events = event if isinstance(event, list) else [event]
                 for parsed in events:
                     await self._handle_event(task_id, parsed, running)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception("stdout reader crashed for task %s", task_id)
+            running.failure_reason = f"Runtime output could not be read: {exc}"
+            await self._terminate_process_tree(process)
         finally:
             await self._on_process_exit(task_id, process, running)
 
@@ -805,6 +860,7 @@ class ProcessManager:
         assert process.stderr is not None
         try:
             async for chunk in process.stderr:
+                running.last_activity_monotonic = time.monotonic()
                 running.stderr_buf += chunk
                 text = chunk.decode("utf-8", errors="replace").strip()
                 if text:
@@ -817,6 +873,41 @@ class ProcessManager:
             raise
         except Exception:  # noqa: BLE001
             logger.exception("stderr reader crashed")
+
+    async def _watchdog(self, task_id: uuid.UUID, running: RunningProcess) -> None:
+        """Fail runtimes that never start, stop responding, or exceed their cap."""
+        try:
+            while running.process.returncode is None:
+                await asyncio.sleep(settings.runtime_watchdog_interval_seconds)
+                now = time.monotonic()
+                elapsed = now - running.started_monotonic
+                idle = now - running.last_activity_monotonic
+                if (
+                    not running.received_event
+                    and elapsed >= settings.runtime_startup_timeout_seconds
+                ):
+                    reason = (
+                        "Agent runtime startup timed out before producing a structured event "
+                        f"({settings.runtime_startup_timeout_seconds:g}s)."
+                    )
+                elif idle >= settings.runtime_idle_timeout_seconds:
+                    reason = (
+                        "Agent runtime became unresponsive "
+                        f"({settings.runtime_idle_timeout_seconds:g}s without output)."
+                    )
+                elif elapsed >= settings.runtime_max_seconds:
+                    reason = (
+                        "Agent runtime exceeded the maximum invocation duration "
+                        f"({settings.runtime_max_seconds:g}s)."
+                    )
+                else:
+                    continue
+                running.failure_reason = reason
+                logger.warning("%s Task: %s", reason, task_id)
+                await self._terminate_process_tree(running.process)
+                return
+        except asyncio.CancelledError:
+            raise
 
     async def _handle_event(self, task_id: uuid.UUID, event: ParsedEvent, running: RunningProcess) -> None:
         if isinstance(event, AgentText):
@@ -940,7 +1031,7 @@ class ProcessManager:
             {"type": "tool_approval", "approval": _serialize_tool_approval(approval)},
         )
         if running.process.returncode is None:
-            running.process.terminate()
+            await self._terminate_process_tree(running.process)
 
     async def _persist_and_broadcast_message(
         self,
@@ -968,8 +1059,13 @@ class ProcessManager:
         self, task_id: uuid.UUID, process: asyncio.subprocess.Process, running: RunningProcess
     ) -> None:
         exit_code = await process.wait()
-        if running.stderr_task is not None:
-            running.stderr_task.cancel()
+        if running.stderr_task is not None and running.stderr_task is not asyncio.current_task():
+            try:
+                await asyncio.wait_for(running.stderr_task, timeout=1)
+            except asyncio.TimeoutError:
+                running.stderr_task.cancel()
+        if running.watchdog_task is not None and running.watchdog_task is not asyncio.current_task():
+            running.watchdog_task.cancel()
         _cleanup_temp_paths(running.temp_paths)
         self._running.pop(task_id, None)
 
@@ -980,7 +1076,7 @@ class ProcessManager:
                     "cancelled"
                     if running.cancel_requested or running.restart_requested or running.switch_requested
                     else "completed"
-                    if exit_code == 0
+                    if exit_code == 0 and running.failure_reason is None
                     else "failed"
                 )
                 invocation.completed_at = datetime.now(timezone.utc)
@@ -1005,12 +1101,16 @@ class ProcessManager:
             # Status is already waiting_on_you; the user's reply resumes it.
             return
 
-        if exit_code == 0:
+        if exit_code == 0 and running.failure_reason is None:
             await self._set_status(task_id, TaskStatus.done, completed=True)
             return
 
         stderr_tail = bytes(running.stderr_buf).decode("utf-8", errors="replace")
-        failure_class = retry.classify(exit_code, stderr_tail)
+        failure_class = (
+            FailureClass.other
+            if running.failure_reason is not None
+            else retry.classify(exit_code, stderr_tail)
+        )
 
         async with SessionLocal() as db:
             existing = await db.execute(
@@ -1022,7 +1122,11 @@ class ProcessManager:
             failure_class == FailureClass.transient and attempt_number <= settings.retry_max_attempts
         )
         backoff_seconds = retry.compute_backoff(attempt_number - 1) if can_retry else None
-        error_message = stderr_tail[-_STDERR_TAIL_LIMIT:] or f"exited with code {exit_code}"
+        error_message = (
+            running.failure_reason
+            or stderr_tail[-_STDERR_TAIL_LIMIT:]
+            or f"exited with code {exit_code}"
+        )
 
         async with SessionLocal() as db:
             run_attempt = TaskRunAttempt(

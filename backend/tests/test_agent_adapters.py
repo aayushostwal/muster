@@ -231,12 +231,16 @@ def test_codex_uses_primary_directory_and_additional_roots():
     command = CodexAdapter().build_command(task, project, bindings, {})
     resumed = CodexAdapter().resume_command(task, project, bindings, {}, "session-id", "Continue")
 
-    assert command[command.index("--cd") + 1] == "/workspace/repo"
-    assert command[command.index("--add-dir") + 1] == "/workspace/shared"
-    assert command[command.index("--sandbox") + 1] == "workspace-write"
-    assert "--cd" not in resumed
-    assert "--add-dir" not in resumed
-    assert "--sandbox" not in resumed
+    assert command.argv[command.argv.index("--cd") + 1] == "/workspace/repo"
+    assert command.argv[command.argv.index("--add-dir") + 1] == "/workspace/shared"
+    assert command.argv[command.argv.index("--sandbox") + 1] == "workspace-write"
+    assert "--cd" not in resumed.argv
+    assert "--add-dir" not in resumed.argv
+    assert "--sandbox" not in resumed.argv
+    assert command.argv[2] == "-"
+    assert command.stdin_payload == "Fix it"
+    assert resumed.argv[4] == "-"
+    assert resumed.stdin_payload == "Continue"
 
 
 def test_fresh_session_commands_accept_runtime_handoff_prompt():
@@ -265,9 +269,11 @@ def test_fresh_session_commands_accept_runtime_handoff_prompt():
     )
     codex = CodexAdapter().build_command(task, project, bindings, {}, "Runtime handoff")
 
-    assert claude[claude.index("-p") + 1] == "Runtime handoff"
-    assert "Runtime handoff" in codex
-    assert "Original prompt" not in codex
+    assert claude.argv[claude.argv.index("-p") + 1] == "Runtime handoff"
+    assert claude.stdin_payload is None
+    assert codex.stdin_payload == "Runtime handoff"
+    assert "Runtime handoff" not in codex.argv
+    assert "Original prompt" not in codex.argv
 
 
 def test_project_default_model_does_not_cross_runtime_boundary():
@@ -300,8 +306,8 @@ def test_project_default_model_does_not_cross_runtime_boundary():
 
     command = CodexAdapter().build_command(task, project, bindings, {})
 
-    assert "--model" not in command
-    assert "claude-sonnet" not in command
+    assert "--model" not in command.argv
+    assert "claude-sonnet" not in command.argv
 
 
 def test_codex_home_overlay_layers_project_rules(monkeypatch, tmp_path):

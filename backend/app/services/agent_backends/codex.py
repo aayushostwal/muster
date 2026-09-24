@@ -12,6 +12,7 @@ from app.services.agent_backends.base import (
     AdapterBindings,
     ActivityEvent,
     AgentText,
+    BackendCommand,
     Done,
     ErrorEvent,
     ParsedEvent,
@@ -89,8 +90,9 @@ class CodexAdapter:
         bindings: AdapterBindings,
         secrets: dict[str, str],
         prompt: str | None = None,
-    ) -> list[str]:
-        cmd = [settings.codex_bin, "exec", self._prompt(task, bindings, prompt or task.initial_prompt), "--json"]
+    ) -> BackendCommand:
+        rendered_prompt = self._prompt(task, bindings, prompt or task.initial_prompt)
+        cmd = [settings.codex_bin, "exec", "-", "--json"]
         model = task.model or (
             project.default_model
             if getattr(task, "backend", None) == getattr(project, "default_backend", None)
@@ -105,7 +107,7 @@ class CodexAdapter:
             if directory != bindings.primary_directory:
                 cmd += ["--add-dir", directory]
         cmd += self._capability_flags(task, bindings)
-        return cmd
+        return BackendCommand(argv=cmd, stdin_payload=rendered_prompt)
 
     def resume_command(
         self,
@@ -115,8 +117,9 @@ class CodexAdapter:
         secrets: dict[str, str],
         session_id: str,
         prompt: str,
-    ) -> list[str]:
-        cmd = [settings.codex_bin, "exec", "resume", session_id, self._prompt(task, bindings, prompt), "--json"]
+    ) -> BackendCommand:
+        rendered_prompt = self._prompt(task, bindings, prompt)
+        cmd = [settings.codex_bin, "exec", "resume", session_id, "-", "--json"]
         model = task.model or (
             project.default_model
             if getattr(task, "backend", None) == getattr(project, "default_backend", None)
@@ -128,7 +131,7 @@ class CodexAdapter:
         # does not accept `--cd`, `--add-dir`, or `--sandbox` again.
         cmd += ["-c", 'approval_policy="on-request"']
         cmd += self._capability_flags(task, bindings)
-        return cmd
+        return BackendCommand(argv=cmd, stdin_payload=rendered_prompt)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db.models import AgentBackend, ContextSnapshot, Message, Task
 from app.db.session import SessionLocal
-from app.services.agent_backends.base import AgentText
+from app.services.agent_backends.base import AgentText, BackendCommand
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
 from app.services.agent_backends.codex import CodexAdapter
 
@@ -29,10 +29,14 @@ _ADAPTERS = {
 }
 
 
-def _summarize_command(backend: AgentBackend, prompt: str) -> list[str]:
+def _summarize_command(backend: AgentBackend, prompt: str) -> BackendCommand:
     if backend == AgentBackend.claude_code:
-        return [settings.claude_code_bin, "-p", prompt, "--output-format", "stream-json"]
-    return [settings.codex_bin, "exec", prompt, "--json"]
+        return BackendCommand(
+            argv=[settings.claude_code_bin, "-p", prompt, "--output-format", "stream-json"]
+        )
+    return BackendCommand(
+        argv=[settings.codex_bin, "exec", "-", "--json"], stdin_payload=prompt
+    )
 
 
 async def _run_one_shot(backend: AgentBackend, prompt: str) -> str:
@@ -41,8 +45,19 @@ async def _run_one_shot(backend: AgentBackend, prompt: str) -> str:
     adapter = _ADAPTERS[backend]
     cmd = _summarize_command(backend, prompt)
     process = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        *cmd.argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        limit=settings.runtime_stream_limit_bytes,
     )
+    if process.stdin is not None:
+        if cmd.stdin_payload is not None:
+            try:
+                process.stdin.write(cmd.stdin_payload.encode("utf-8"))
+            except (ConnectionResetError, BrokenPipeError, RuntimeError):
+                pass
+        process.stdin.close()
     chunks: list[str] = []
     assert process.stdout is not None
     async for raw_line in process.stdout:

@@ -87,6 +87,12 @@ read from `MUSTER_`-prefixed environment variables (e.g.
 always the individual `MUSTER_POSTGRES_*` fields, matching what
 `scripts/install.sh` writes to `~/.muster/muster.env`.
 
+Agent runtime safeguards are configurable with
+`MUSTER_RUNTIME_STARTUP_TIMEOUT_SECONDS` (default `60`),
+`MUSTER_RUNTIME_IDLE_TIMEOUT_SECONDS` (default `1200`),
+`MUSTER_RUNTIME_MAX_SECONDS` (default `7200`), and
+`MUSTER_RUNTIME_STREAM_LIMIT_BYTES` (default `8388608`).
+
 ## Running it
 
 ```bash
