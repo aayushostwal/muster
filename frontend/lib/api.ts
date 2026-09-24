@@ -111,6 +111,8 @@ export const api = {
   ) => request<Task>(`/api/projects/${projectId}/tasks`, { method: "POST", ...json(body) }),
   taskAction: (id: string, action: "cancel" | "restart" | "retry-now") =>
     request<Task>(`/api/tasks/${id}/${action}`, { method: "POST" }),
+  updateTaskBackend: (id: string, backend: AgentBackend) =>
+    request<Task>(`/api/tasks/${id}/backend`, { method: "PATCH", ...json({ backend }) }),
   updateTaskModel: (id: string, model: string) =>
     request<Task>(`/api/tasks/${id}/model`, { method: "PATCH", ...json({ model }) }),
   updateTaskModels: (id: string, models: string[]) =>

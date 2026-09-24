@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import {
   Activity,
   ArrowLeft,
+  ArrowRightLeft,
   BrainCircuit,
   CircleStop,
   Clock3,
@@ -43,7 +44,7 @@ import { SLASH_PATTERN, useSlashCommands, type SlashCommandItem } from "@/hooks/
 import { api } from "@/lib/api";
 import { TASK_TAG_OPTIONS } from "@/lib/task-tags";
 import { storedMagicCanvasContext } from "@/lib/magic-canvas";
-import type { ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus, ToolApproval } from "@/lib/types";
+import type { AgentBackend, ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus, ToolApproval } from "@/lib/types";
 import { backendLabel, cn, formatDateTime, shortId } from "@/lib/utils";
 
 const statusMeta: Record<TaskStatus, { label: string; color: string }> = {
@@ -141,7 +142,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         </section>
         <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
       </div>
-      <TaskSettings task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <TaskSettings key={current.backend} task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
       <TaskDetailsDrawer task={current} projectName={project.data?.name} attempts={attempts.data?.items ?? []} invocations={invocations.data?.items ?? []} open={detailsOpen} onClose={() => setDetailsOpen(false)} onOpenTranscript={() => { setDetailsOpen(false); setTranscriptOpen(true); }} />
       <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); if (name === "restart") setRestartOpen(true); else action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
@@ -391,6 +392,87 @@ function Detail({ label, value }: { label: string; value: string }) {
   return <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2.5"><dt className="text-[0.56rem] uppercase tracking-wider text-slate-700">{label}</dt><dd className="mt-1 truncate text-xs text-slate-300">{value}</dd></div>;
 }
 
+function RuntimeSwitchControl({ task }: { task: Task }) {
+  const [runtime, setRuntime] = useState<AgentBackend>(task.backend);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const switchRuntime = useMutation({
+    mutationFn: () => api.updateTaskBackend(task.id, runtime),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["task", task.id], updated);
+      queryClient.invalidateQueries({ queryKey: ["messages", task.id] });
+      queryClient.invalidateQueries({ queryKey: ["invocations", task.id] });
+      queryClient.invalidateQueries({ queryKey: ["tool-approvals", task.id] });
+      queryClient.invalidateQueries({ queryKey: ["tasks", task.project_id] });
+      queryClient.invalidateQueries({ queryKey: ["tasks", "global"] });
+      setConfirmOpen(false);
+      toast(`Runtime switched to ${backendLabel(updated.backend)}`, "success");
+    },
+    onError: (error: Error) => toast(error.message, "error"),
+  });
+  const active = task.status === "running" || task.status === "queued";
+
+  return (
+    <>
+      <div>
+        <div className="flex items-center gap-2">
+          <ArrowRightLeft className="h-4 w-4 text-signal-400" />
+          <h3 className="text-sm font-medium text-white">Agent runtime</h3>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-slate-600">
+          Move this task between Claude Code and Codex without losing its visible history.
+        </p>
+        <div className="mt-3 flex gap-2">
+          <Select
+            label="Agent runtime"
+            value={runtime}
+            onChange={(value) => setRuntime(value as AgentBackend)}
+            options={[
+              { value: "claude_code", label: "Claude Code", description: "Anthropic CLI runtime" },
+              { value: "codex", label: "Codex", description: "OpenAI CLI runtime" },
+            ]}
+          />
+          <Button
+            onClick={() => setConfirmOpen(true)}
+            disabled={runtime === task.backend}
+          >
+            Switch
+          </Button>
+        </div>
+        <p className="mt-2 font-mono text-[0.6rem] text-slate-700">
+          Current: {backendLabel(task.backend)}
+        </p>
+      </div>
+
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title={`Switch to ${backendLabel(runtime)}?`}
+        description="The destination runtime will continue this task in a new native session."
+      >
+        <div className="space-y-5">
+          <div className="flex items-center justify-center gap-4 rounded-xl border border-white/[0.08] bg-black/15 p-5">
+            <span className="rounded-lg border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-xs font-medium text-slate-300">{backendLabel(task.backend)}</span>
+            <ArrowRightLeft className="h-4 w-4 text-signal-400" />
+            <span className="rounded-lg border border-signal-400/20 bg-signal-400/[0.07] px-3 py-2 text-xs font-medium text-signal-300">{backendLabel(runtime)}</span>
+          </div>
+          <ul className="space-y-2 text-xs leading-5 text-slate-500">
+            {active && <li>The active invocation will be stopped before the new runtime starts.</li>}
+            <li>The existing conversation and invocation history will remain visible.</li>
+            <li>A structured handoff of the prior conversation will seed the new session.</li>
+            <li>The old session ID, selected agent, and model chain cannot cross runtimes and will be reset.</li>
+          </ul>
+          <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-5">
+            <Button variant="ghost" onClick={() => setConfirmOpen(false)} disabled={switchRuntime.isPending}>Keep {backendLabel(task.backend)}</Button>
+            <Button variant="primary" onClick={() => switchRuntime.mutate()} loading={switchRuntime.isPending}><ArrowRightLeft className="h-4 w-4" /> Switch runtime</Button>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
 function TaskSettings({ task, open, onClose }: { task: Task; open: boolean; onClose: () => void }) {
   const [models, setModels] = useState([task.model, ...task.fallback_models].filter((value): value is string => Boolean(value))); const [thinking, setThinking] = useState(task.thinking_level); const [context, setContext] = useState(task.context_strategy); const [tags, setTags] = useState(task.tags); const queryClient = useQueryClient(); const toast = useToast();
   const catalog = useQuery({ queryKey: ["models", task.backend], queryFn: () => api.models(task.backend), enabled: open, staleTime: 60 * 60 * 1000 });
@@ -400,7 +482,7 @@ function TaskSettings({ task, open, onClose }: { task: Task; open: boolean; onCl
   const updateContext = useMutation({ mutationFn: () => api.updateTaskContext(task.id, context), onSuccess: (updated) => { queryClient.setQueryData(["task", task.id], updated); toast("Context strategy updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
   const updateTags = useMutation({ mutationFn: () => api.updateTaskTags(task.id, tags), onSuccess: (updated) => { queryClient.setQueryData(["task", task.id], updated); queryClient.invalidateQueries({ queryKey: ["tasks", task.project_id] }); toast("Task tags updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
   const compress = useMutation({ mutationFn: () => api.compressContext(task.id), onSuccess: () => toast("Context compressed; raw transcript preserved", "success"), onError: (error: Error) => toast(error.message, "error") });
-  return <Drawer open={open} onClose={onClose} title="Task controls"><div className="space-y-7"><div><div className="flex items-center justify-between"><div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-pulse-400" /><h3 className="text-sm font-medium text-white">Model chain</h3></div><button onClick={() => refreshModels.mutate()} disabled={refreshModels.isPending} className="text-[0.65rem] text-signal-400 disabled:opacity-50">{refreshModels.isPending ? "Refreshing…" : "Refresh from CLI"}</button></div><p className="mt-2 text-xs leading-5 text-slate-600">The first model is primary; remaining models are fallbacks when supported.</p><div className="mt-3"><MultiSelect label={catalog.isPending ? "Discovering models" : "Select models"} values={models} onChange={setModels} options={(catalog.data?.items ?? []).map((item) => ({ value: item.id, label: item.label, description: item.id }))} disabled={catalog.isPending} /></div><Button className="mt-3" onClick={() => updateModels.mutate()} loading={updateModels.isPending} disabled={models.length === 0}>Save model chain</Button></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Workflow tags</h3><p className="mt-2 text-xs leading-5 text-slate-600">Label this task for board filtering and delivery tracking.</p><div className="mt-3"><MultiSelect label="Add task tags" values={tags} onChange={setTags} options={[...TASK_TAG_OPTIONS]} /></div><Button className="mt-3" onClick={() => updateTags.mutate()} loading={updateTags.isPending}>Save tags</Button></div><div className="border-t border-white/[0.07] pt-6"><div className="flex items-center gap-2"><BrainCircuit className="h-4 w-4 text-signal-400" /><h3 className="text-sm font-medium text-white">Thinking level</h3></div><p className="mt-2 text-xs leading-5 text-slate-600">Applied to new Claude and Codex invocations.</p><div className="mt-3 flex gap-2"><Select label="Thinking level" value={thinking} onChange={setThinking} options={["low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} /><Button onClick={() => updateThinking.mutate()} loading={updateThinking.isPending}>Save</Button></div></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Context strategy</h3><p className="mt-2 text-xs leading-5 text-slate-600">Control how conversation history is passed into subsequent turns.</p><div className="mt-3 flex gap-2"><Select label="Context strategy" value={context} onChange={setContext} options={[{ value: "full", label: "Full conversation" }, { value: "compressed", label: "Compressed context" }]} /><Button onClick={() => updateContext.mutate()} loading={updateContext.isPending}>Save</Button></div></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Compress now</h3><p className="mt-2 text-xs leading-5 text-slate-600">Summarize older turns while retaining the ten most recent. The full transcript remains available.</p><Button className="mt-4" onClick={() => compress.mutate()} loading={compress.isPending}><BrainCircuit className="h-4 w-4" /> Compress context</Button></div></div></Drawer>;
+  return <Drawer open={open} onClose={onClose} title="Task controls"><div className="space-y-7"><RuntimeSwitchControl task={task} /><div className="border-t border-white/[0.07] pt-6"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-pulse-400" /><h3 className="text-sm font-medium text-white">Model chain</h3></div><button onClick={() => refreshModels.mutate()} disabled={refreshModels.isPending} className="text-[0.65rem] text-signal-400 disabled:opacity-50">{refreshModels.isPending ? "Refreshing…" : "Refresh from CLI"}</button></div><p className="mt-2 text-xs leading-5 text-slate-600">The first model is primary; remaining models are fallbacks when supported.</p><div className="mt-3"><MultiSelect label={catalog.isPending ? "Discovering models" : "Select models"} values={models} onChange={setModels} options={(catalog.data?.items ?? []).map((item) => ({ value: item.id, label: item.label, description: item.id }))} disabled={catalog.isPending} /></div><Button className="mt-3" onClick={() => updateModels.mutate()} loading={updateModels.isPending} disabled={models.length === 0}>Save model chain</Button></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Workflow tags</h3><p className="mt-2 text-xs leading-5 text-slate-600">Label this task for board filtering and delivery tracking.</p><div className="mt-3"><MultiSelect label="Add task tags" values={tags} onChange={setTags} options={[...TASK_TAG_OPTIONS]} /></div><Button className="mt-3" onClick={() => updateTags.mutate()} loading={updateTags.isPending}>Save tags</Button></div><div className="border-t border-white/[0.07] pt-6"><div className="flex items-center gap-2"><BrainCircuit className="h-4 w-4 text-signal-400" /><h3 className="text-sm font-medium text-white">Thinking level</h3></div><p className="mt-2 text-xs leading-5 text-slate-600">Applied to new Claude and Codex invocations.</p><div className="mt-3 flex gap-2"><Select label="Thinking level" value={thinking} onChange={setThinking} options={["low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} /><Button onClick={() => updateThinking.mutate()} loading={updateThinking.isPending}>Save</Button></div></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Context strategy</h3><p className="mt-2 text-xs leading-5 text-slate-600">Control how conversation history is passed into subsequent turns.</p><div className="mt-3 flex gap-2"><Select label="Context strategy" value={context} onChange={setContext} options={[{ value: "full", label: "Full conversation" }, { value: "compressed", label: "Compressed context" }]} /><Button onClick={() => updateContext.mutate()} loading={updateContext.isPending}>Save</Button></div></div><div className="border-t border-white/[0.07] pt-6"><h3 className="text-sm font-medium text-white">Compress now</h3><p className="mt-2 text-xs leading-5 text-slate-600">Summarize older turns while retaining the ten most recent. The full transcript remains available.</p><Button className="mt-4" onClick={() => compress.mutate()} loading={compress.isPending}><BrainCircuit className="h-4 w-4" /> Compress context</Button></div></div></Drawer>;
 }
 
 function TranscriptDrawer({ taskId, open, onClose }: { taskId: string; open: boolean; onClose: () => void }) {

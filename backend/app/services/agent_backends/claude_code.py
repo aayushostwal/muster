@@ -126,7 +126,11 @@ class ClaudeCodeAdapter:
         if mcp_config_path:
             flags += ["--mcp-config", mcp_config_path]
 
-        model = task.model or project.default_model
+        model = task.model or (
+            project.default_model
+            if getattr(task, "backend", None) == getattr(project, "default_backend", None)
+            else None
+        )
         if model:
             flags += ["--model", model]
 
@@ -158,8 +162,9 @@ class ClaudeCodeAdapter:
         project: Project,
         bindings: AdapterBindings,
         secrets: dict[str, str],
+        prompt: str | None = None,
     ) -> list[str]:
-        cmd = [settings.claude_code_bin, "-p", task.initial_prompt]
+        cmd = [settings.claude_code_bin, "-p", prompt or task.initial_prompt]
         cmd += self._base_flags(task, project, bindings, secrets)
         return cmd
 

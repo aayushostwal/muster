@@ -96,9 +96,9 @@ export function TerminalThread({
           <AnimatePresence initial={false}>
             {items.map((item) =>
               item.type === "intermediate" ? (
-                <IntermediateResponses key={item.id} messages={item.messages} backend={task.backend} />
+                <IntermediateResponses key={item.id} messages={item.messages} backend={backendForMessage(item.messages.at(-1)!, invocations, task.backend)} />
               ) : (
-                <TerminalMessage key={item.message.id} message={item.message} backend={task.backend} onOpenCanvas={onOpenCanvas} />
+                <TerminalMessage key={item.message.id} message={item.message} backend={backendForMessage(item.message, invocations, task.backend)} onOpenCanvas={onOpenCanvas} />
               ),
             )}
           </AnimatePresence>
@@ -337,6 +337,15 @@ function invocationForMessage(message: Message, invocations: TaskInvocation[]): 
       return createdAt >= startedAt && createdAt <= completedAt;
     });
   return match?.id ?? "unscoped";
+}
+
+function backendForMessage(
+  message: Message,
+  invocations: TaskInvocation[],
+  fallback: Task["backend"],
+): Task["backend"] {
+  const invocationId = invocationForMessage(message, invocations);
+  return invocations.find((invocation) => invocation.id === invocationId)?.backend ?? fallback;
 }
 
 export function TerminalFrame({ children }: { children: ReactNode }) {

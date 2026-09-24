@@ -98,6 +98,7 @@ class AgentBackendAdapter(Protocol):
         project: Project,
         bindings: "AdapterBindings",
         secrets: dict[str, str],
+        prompt: str | None = None,
     ) -> list[str]:
         """Build the argv for the first turn of a task (no prior session)."""
         ...
