@@ -112,7 +112,8 @@ POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, mod
 
 GET    /api/tasks/{id}
 POST   /api/tasks/{id}/cancel
-POST   /api/tasks/{id}/restart
+POST   /api/tasks/{id}/restart             # stop any live invocation and start a new native
+                                            # session from Task.initial_prompt; preserve history
 POST   /api/tasks/{id}/retry-now           # skip backoff wait, retry immediately
 PATCH  /api/tasks/{id}/model               {model}       # switch model mid-conversation
 PATCH  /api/tasks/{id}/models              {models}      # ordered primary/fallback model chain

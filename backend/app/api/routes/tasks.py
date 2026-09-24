@@ -110,13 +110,8 @@ async def cancel_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.post("/tasks/{task_id}/restart", response_model=TaskRead)
 async def restart_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     task = await _get_task_or_404(db, task_id)
-    task.status = TaskStatus.queued
-    task.session_id = None
-    task.started_at = None
-    task.completed_at = None
-    await db.commit()
+    await process_manager.restart_from_beginning(task.id)
     await db.refresh(task)
-    await process_manager.trigger(task.id)
     return task
 
 
