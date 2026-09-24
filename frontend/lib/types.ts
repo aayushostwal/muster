@@ -309,3 +309,13 @@ export type TaskStreamEvent =
   | { type: "invocation"; invocation: TaskInvocation }
   | { type: "token_usage"; used: number; limit: number }
   | { type: "tool_approval"; approval: ToolApproval };
+
+/** Emitted on the global `/ws/events` feed whenever any task's status changes. */
+export interface TaskStatusEvent {
+  type: "task_status";
+  task_id: string;
+  project_id: string;
+  task_title: string;
+  project_name: string | null;
+  status: TaskStatus;
+}

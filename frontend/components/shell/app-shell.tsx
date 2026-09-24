@@ -10,6 +10,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { Logo } from "@/components/brand/logo";
 import { GlobalTaskComposer } from "@/components/task/global-task-composer";
 import { Button } from "@/components/ui/button";
+import { useTaskNotifications } from "@/hooks/use-task-notifications";
 import { api } from "@/lib/api";
 import { cn, initials } from "@/lib/utils";
 
@@ -92,6 +93,7 @@ function SidebarContent({ close }: { close?: () => void }) {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const taskRoute = pathname.startsWith("/tasks/");
+  useTaskNotifications();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const health = useQuery({
