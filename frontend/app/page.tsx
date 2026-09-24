@@ -1,5 +1,5 @@
-import { ProjectsCommandCenter } from "@/components/projects/projects-command-center";
+import { GlobalCommandCenter } from "@/components/dashboard/global-command-center";
 
 export default function HomePage() {
-  return <ProjectsCommandCenter />;
+  return <GlobalCommandCenter />;
 }

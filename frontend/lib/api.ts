@@ -93,6 +93,7 @@ export const api = {
 
   tasks: (projectId: string) =>
     request<ListResponse<Task>>(`/api/projects/${projectId}/tasks`),
+  allTasks: () => request<ListResponse<Task>>("/api/tasks"),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
   createTask: (
     projectId: string,

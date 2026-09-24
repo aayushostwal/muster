@@ -94,6 +94,19 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
     return task
 
 
+@router.get("/tasks")
+async def list_all_tasks(
+    status: list[TaskStatus] | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return tasks across every project for the global command center."""
+    stmt = select(Task)
+    if status:
+        stmt = stmt.where(Task.status.in_(status))
+    result = await db.execute(stmt.order_by(Task.updated_at.desc(), Task.created_at.desc()))
+    return {"items": [TaskRead.model_validate(task) for task in result.scalars().all()]}
+
+
 @router.get("/tasks/{task_id}", response_model=TaskRead)
 async def get_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return await _get_task_or_404(db, task_id)
