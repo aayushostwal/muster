@@ -69,6 +69,15 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
         assert resp.status_code == 200
         assert len(resp.json()["items"]) == 1
 
+        # the global command center can see tasks without per-project fan-out
+        resp = await client.get("/api/tasks")
+        assert resp.status_code == 200
+        assert [item["id"] for item in resp.json()["items"]] == [task["id"]]
+        resp = await client.get("/api/tasks", params={"status": "queued"})
+        assert [item["id"] for item in resp.json()["items"]] == [task["id"]]
+        resp = await client.get("/api/tasks", params={"status": "done"})
+        assert resp.json()["items"] == []
+
         # filtering by status
         resp = await client.get(
             f"/api/projects/{project_id}/tasks", params={"status": "queued"}

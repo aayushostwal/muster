@@ -110,6 +110,7 @@ POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, mod
                                             -> creates Task(status=queued), immediately calls
                                                process_manager.trigger(task) (fire-and-forget), 201
 
+GET    /api/tasks                           ?status=<TaskStatus>&status=<TaskStatus>  # cross-project command center, newest activity first
 GET    /api/tasks/{id}
 POST   /api/tasks/{id}/cancel
 POST   /api/tasks/{id}/restart
@@ -301,8 +302,9 @@ initial_prompt=cron_job.prompt, cron_job_id=cron_job.id) and calls
 
 ## Frontend (`frontend/`, Next.js + TypeScript + Tailwind)
 
-Routes: `/` (project command center), `/registry/:kind` (global directories,
-MCP connectors, agents, skills, and tool policies), `/projects/:id` (project profile and
+Routes: `/` (cross-project live operations command center), `/projects` (project
+management), `/registry/:kind` (global directories, MCP connectors, agents, skills,
+and tool policies), `/projects/:id` (project profile and
 capability access), `/projects/:id/board` (task board), and `/tasks/:id`
 (compact chat, activity timeline, multi-agent view, invocation telemetry,
 model/thinking/context controls, and transcript).

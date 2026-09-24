@@ -26,7 +26,10 @@ const STATUS_LABELS: Record<string, string> = {
 export function useTaskNotifications() {
   const router = useRouter();
   const routerRef = useRef(router);
-  routerRef.current = router;
+
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) return;

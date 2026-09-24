@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, Bot, Code2, Command, FolderCode, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
+import { Activity, Bot, Code2, Command, FolderCode, FolderKanban, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -38,6 +38,17 @@ function SidebarContent({ close }: { close?: () => void }) {
           <Command className="h-4 w-4" />
           Command center
         </Link>
+        <Link
+          href="/projects"
+          onClick={close}
+          className={cn(
+            "mt-1 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition",
+            pathname === "/projects" ? "bg-white/[0.075] text-white" : "text-slate-500 hover:bg-white/[0.04] hover:text-slate-200",
+          )}
+        >
+          <FolderKanban className={cn("h-4 w-4", pathname === "/projects" && "text-signal-400")} />
+          Project management
+        </Link>
         <div className="mt-8 px-3">
           <p className="text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-slate-600">Global configuration</p>
         </div>
@@ -55,7 +66,7 @@ function SidebarContent({ close }: { close?: () => void }) {
           })}
         </div>
         <div className="mt-8 flex items-center justify-between px-3">
-          <p className="text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-slate-600">Active projects</p>
+          <p className="text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-slate-600">Project quick access</p>
           <span className="font-mono text-[0.65rem] text-slate-700">{data?.items.length ?? 0}</span>
         </div>
         <div className="mt-2 space-y-1">
