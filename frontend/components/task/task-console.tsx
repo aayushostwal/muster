@@ -12,6 +12,7 @@ import {
   History,
   MoreHorizontal,
   Network,
+  PanelRightOpen,
   RefreshCcw,
   RotateCcw,
   Send,
@@ -23,7 +24,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import Link from "next/link";
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
@@ -34,9 +35,13 @@ import { useToast } from "@/components/ui/toast";
 import { ActivityFeed, AgentActivity } from "@/components/task/activity-panels";
 import { TaskTokenHud } from "@/components/task/task-token-hud";
 import { TerminalFrame, TerminalThread } from "@/components/task/terminal-thread";
+import { MagicCanvas } from "@/components/task/magic-canvas";
+import { SlashCommandMenu } from "@/components/task/slash-command-menu";
 import { useTaskStream } from "@/hooks/use-task-stream";
+import { SLASH_PATTERN, useSlashCommands, type SlashCommandItem } from "@/hooks/use-slash-commands";
 import { api } from "@/lib/api";
 import { TASK_TAG_OPTIONS } from "@/lib/task-tags";
+import { storedMagicCanvasContext } from "@/lib/magic-canvas";
 import type { ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus, ToolApproval } from "@/lib/types";
 import { backendLabel, cn, formatDateTime, shortId } from "@/lib/utils";
 
@@ -62,6 +67,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
   const action = useMutation({ mutationFn: (name: "cancel" | "restart" | "retry-now") => api.taskAction(taskId, name), onSuccess: (updated) => { queryClient.setQueryData(["task", taskId], updated); toast("Task state updated", "success"); }, onError: (error: Error) => toast(error.message, "error") });
@@ -98,6 +104,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         </nav>
 
         <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
+        <Tooltip label="Open Magic Canvas" side="bottom"><Button size="icon" variant={canvasOpen ? "primary" : "ghost"} onClick={() => setCanvasOpen((value) => !value)} aria-label="Toggle Magic Canvas"><PanelRightOpen className="h-4 w-4" /></Button></Tooltip>
         <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"} side="bottom"><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
         <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
           {current.status === "failed" && <Tooltip label="Retry now" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => action.mutate("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
@@ -113,12 +120,13 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       {retrying && <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-amber-400/15 bg-amber-400/[0.045] px-4 py-3"><div className="flex items-center gap-3"><Clock3 className="h-4 w-4 text-amber-400" /><p className="text-xs text-amber-100/70">Transient failure detected. Automatic retry scheduled in {latestAttempt.backoff_seconds} seconds.</p></div><Button size="sm" variant="ghost" onClick={() => action.mutate("retry-now")}>Retry now</Button></motion.div>}
       {pendingApproval && <ToolApprovalBar approval={pendingApproval} />}
 
-      <div className="mt-2 min-h-0 flex-1">
+      <div className={cn("mt-2 min-h-0 flex-1 gap-2", canvasOpen && "xl:grid xl:grid-cols-[minmax(28rem,0.92fr)_minmax(30rem,1.08fr)]")}>
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
           <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>
-          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
+          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
           {view === "terminal" && <Composer taskId={taskId} status={current.status} />}
         </section>
+        <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
       </div>
       <TaskSettings task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
@@ -147,14 +155,55 @@ function ToolApprovalBar({ approval }: { approval: ToolApproval }) {
 
 function Composer({ taskId, status }: { taskId: string; status: TaskStatus }) {
   const [value, setValue] = useState(""); const [error, setError] = useState(""); const queryClient = useQueryClient(); const toast = useToast();
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
+  const slashCommands = useSlashCommands(slashQuery);
   const send = useMutation({
-    mutationFn: (content: string) => api.sendMessage(taskId, content),
+    mutationFn: (content: string) => {
+      const canvas = storedMagicCanvasContext(taskId);
+      return api.sendMessage(taskId, content, canvas ? [canvas] : []);
+    },
     onMutate: async (content) => { await queryClient.cancelQueries({ queryKey: ["messages", taskId] }); const previous = queryClient.getQueryData<ListResponse<Message>>(["messages", taskId]); const optimistic: Message = { id: `optimistic-${Date.now()}`, task_id: taskId, sender: "user", content_text: content, media: [], is_blocking_question: false, created_at: new Date().toISOString(), optimistic: true }; queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], { items: [...(previous?.items ?? []), optimistic] }); setValue(""); return { previous }; },
     onError: (cause: Error, _content, context) => { queryClient.setQueryData(["messages", taskId], context?.previous); setError(cause.message); toast("Message was not sent", "error"); },
     onSuccess: (saved) => { queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], (current) => ({ items: [...(current?.items.filter((item) => !item.optimistic) ?? []), saved] })); queryClient.invalidateQueries({ queryKey: ["task", taskId] }); setError(""); },
   });
   const submit = (event: FormEvent) => { event.preventDefault(); const content = value.trim(); if (content && !send.isPending) send.mutate(content); };
-  return <form onSubmit={submit} className="border-t border-white/[0.07] bg-black/10 p-3"><div className="mx-auto max-w-3xl"><div className="flex items-end gap-2 rounded-xl border border-white/10 bg-ink-950/70 p-1.5 transition focus-within:border-signal-400/30 focus-within:ring-4 focus-within:ring-signal-400/[0.05]"><textarea value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} rows={1} className="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white placeholder:text-slate-700 focus:outline-none" placeholder={status === "waiting_on_you" ? "Respond to the agent" : "Send a follow-up instruction"} aria-label="Message agent" /><Button type="submit" size="icon" variant="primary" loading={send.isPending} disabled={!value.trim()} aria-label="Send message"><Send className="h-4 w-4" /></Button></div>{error && <p className="mt-2 text-xs text-red-400" role="alert">{error}</p>}<p className="mt-1.5 px-1 text-[0.56rem] text-slate-700">Enter to send · Shift + Enter for a new line</p></div></form>;
+  const changeValue = (next: string) => {
+    setValue(next);
+    setError("");
+    const match = next.match(SLASH_PATTERN);
+    setSlashQuery(match?.[1] ?? null);
+    setSlashActiveIndex(0);
+  };
+  const selectSlashCommand = (item: SlashCommandItem) => {
+    const match = value.match(SLASH_PATTERN);
+    const insertion = `/${item.name} `;
+    setValue(match ? `${value.slice(0, match.index)}${match[0].startsWith(" ") ? " " : ""}${insertion}` : `${insertion}${value}`);
+    setSlashQuery(null);
+    setSlashActiveIndex(0);
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (slashQuery !== null && slashCommands.suggestions.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashActiveIndex((current) =>
+          event.key === "ArrowDown"
+            ? (current + 1) % slashCommands.suggestions.length
+            : (current - 1 + slashCommands.suggestions.length) % slashCommands.suggestions.length,
+        );
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        selectSlashCommand(slashCommands.suggestions[slashActiveIndex] ?? slashCommands.suggestions[0]);
+        return;
+      }
+      if (event.key === "Escape") { event.preventDefault(); setSlashQuery(null); return; }
+    }
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
+  };
+  return <form onSubmit={submit} className="border-t border-white/[0.07] bg-black/10 p-3"><div className="mx-auto max-w-3xl"><div className="relative flex items-end gap-2 rounded-xl border border-white/10 bg-ink-950/70 p-1.5 transition focus-within:border-signal-400/30 focus-within:ring-4 focus-within:ring-signal-400/[0.05]"><textarea value={value} onChange={(event) => changeValue(event.target.value)} onKeyDown={handleKeyDown} rows={1} className="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white placeholder:text-slate-700 focus:outline-none" placeholder={status === "waiting_on_you" ? "Respond to the agent" : "Send a follow-up instruction, / for a command, agent, or skill"} aria-label="Message agent" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls={slashQuery !== null ? "slash-command-list" : undefined} aria-expanded={slashQuery !== null} aria-activedescendant={slashQuery !== null && slashCommands.suggestions[slashActiveIndex] ? `slash-command-${slashCommands.suggestions[slashActiveIndex].id}` : undefined} /><Button type="submit" size="icon" variant="primary" loading={send.isPending} disabled={!value.trim()} aria-label="Send message"><Send className="h-4 w-4" /></Button><SlashCommandMenu open={slashQuery !== null} loading={slashCommands.isPending} error={slashCommands.isError} items={slashCommands.suggestions} activeIndex={slashActiveIndex} onHover={setSlashActiveIndex} onSelect={selectSlashCommand} className="absolute inset-x-1.5 bottom-full mb-2" /></div>{error && <p className="mt-2 text-xs text-red-400" role="alert">{error}</p>}<p className="mt-1.5 px-1 text-[0.56rem] text-slate-700">Enter to send · Shift + Enter for a new line</p></div></form>;
 }
 
 function TaskDetailsDrawer({

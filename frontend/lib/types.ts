@@ -56,7 +56,16 @@ export interface Message {
   task_id: string;
   sender: MessageSender;
   content_text: string | null;
-  media: Array<{ path?: string; mime?: string; name?: string }>;
+  media: Array<{
+    path?: string;
+    mime?: string;
+    name?: string;
+    kind?: "magic_canvas";
+    content?: string;
+    format?: "code" | "markdown" | "diagram";
+    language?: string | null;
+    title?: string;
+  }>;
   is_blocking_question: boolean;
   created_at: string;
   optimistic?: boolean;
@@ -203,8 +212,18 @@ export interface Skill {
   updated_at: string;
 }
 
+export interface GlobalTool {
+  id: string;
+  name: string;
+  description: string | null;
+  config: ToolRuleConfig;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Capability {
-  resource_type: "mcp" | "agent" | "skill";
+  resource_type: "mcp" | "agent" | "skill" | "tool";
   resource_id: string;
   name: string;
   description: string | null;

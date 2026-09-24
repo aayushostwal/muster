@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, Bot, Command, FolderCode, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
+import { Activity, Bot, Code2, Command, FolderCode, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -45,6 +45,7 @@ function SidebarContent({ close }: { close?: () => void }) {
           {[
             { href: "/registry/agents", label: "Agents", icon: Bot },
             { href: "/registry/skills", label: "Skills", icon: Sparkles },
+            { href: "/registry/tools", label: "Tools", icon: Code2 },
             { href: "/registry/mcp", label: "MCP connectors", icon: Network },
             { href: "/registry/directories", label: "Directories", icon: FolderCode },
           ].map((item) => {

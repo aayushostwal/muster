@@ -273,6 +273,20 @@ class Skill(Base):
     )
 
 
+class GlobalTool(Base):
+    __tablename__ = "global_tools"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class CapabilityImport(Base):
     """Provenance for a capability copied from a local agent environment."""
 

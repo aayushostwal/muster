@@ -2,7 +2,7 @@
 
 Muster is a self-hosted, local-first control plane for Claude Code and Codex
 agent sessions. It replaces a desktop full of terminal tabs with a single
-web UI. Directories, MCP connectors, agents, and skills live in global
+web UI. Directories, MCP connectors, agents, skills, and tool policies live in global
 registries; projects receive explicit directory grants and can override the
 globally available capabilities. Tasks are the unit of agent work, each with
 its own persistent chat; creating a Task or sending it a message is the trigger —
@@ -76,7 +76,7 @@ the Next.js development server on port 5173, run `make up` rather than
 - Get blocked mid-run — a permission prompt or a clarifying question lands
   directly in the Task's chat and flips its status to *Waiting on You*.
   There's no separate notification channel to check.
-- Manage directories, MCP connectors, agents, and skills once in global
+- Manage directories, MCP connectors, agents, skills, and tool policies once in global
   registries. Projects explicitly bind directories and can enable or disable
   every other capability without duplicating configuration.
 - Choose one read/write directory as each Project's working root. Claude Code
@@ -119,14 +119,14 @@ the Next.js development server on port 5173, run `make up` rather than
 | Entity | What it is |
 | --- | --- |
 | **Project** | A workspace with explicit directory grants, per-capability overrides, artifacts, schedules, secrets, and default runtime settings. |
-| **Global capability** | A reusable directory, MCP connector, agent profile, or skill. MCP/agent/skill resources are available to projects by default; directories require an explicit grant. |
+| **Global capability** | A reusable directory, MCP connector, agent profile, skill, or tool policy. MCP/agent/skill/tool resources are available to projects by default; directories require an explicit grant. |
 | **Task** | The unit of agent work inside a Project — prompt, runtime, ordered model chain, thinking level, context strategy, and its own Chat. |
 | **Chat** | The ordered Messages tied to a Task — user, agent, and system senders, with a blocking-question flag for the human-in-the-loop flow. |
 | **Invocation** | One Claude or Codex process run, including native session id, selected model, status, and input/output/cache token counts. |
 | **Task event** | A structured, collapsible tool call, diff, reasoning block, runtime log, or delegated-agent event. |
 | **Artifact** | A named binding inside a Project, e.g. a GitHub repo tied to a local path and optionally a remote service URL. |
 | **Directory binding** | A project-scoped read or read-write grant to a globally registered filesystem root. |
-| **Tool permission** | A project-scoped Claude tool pattern and/or Codex command-prefix rule, with inline one-time approval for uncovered calls. |
+| **Tool permission** | A global Claude tool pattern and/or Codex command-prefix rule inherited by projects, with project-specific overrides and inline one-time approval for uncovered calls. Codex commands remain inside the workspace-write sandbox. |
 | **Cron Job** | A scheduled Task template: a cron expression plus the prompt/backend/model to run, still surfaced on the same Task board. |
 | **Context Snapshot** | A compressed summary of a Task's chat history, stored alongside — never in place of — the full raw transcript. |
 

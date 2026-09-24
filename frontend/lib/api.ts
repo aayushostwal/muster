@@ -9,6 +9,7 @@ import type {
   DirectoryBinding,
   DirectoryResource,
   GlobalMcpServer,
+  GlobalTool,
   AgentProfile,
   Skill,
   ModelCatalog,
@@ -125,10 +126,10 @@ export const api = {
   compressContext: (id: string) =>
     request<ContextSnapshot>(`/api/tasks/${id}/compress-context`, { method: "POST" }),
   messages: (id: string) => request<ListResponse<Message>>(`/api/tasks/${id}/messages`),
-  sendMessage: (id: string, content_text: string) =>
+  sendMessage: (id: string, content_text: string, media: Message["media"] = []) =>
     request<Message>(`/api/tasks/${id}/messages`, {
       method: "POST",
-      ...json({ content_text, media: [] }),
+      ...json({ content_text, media }),
     }),
   transcript: (id: string) =>
     request<{ task_id: string; transcript: string }>(`/api/tasks/${id}/transcript`),
@@ -255,9 +256,16 @@ export const api = {
     request<Skill>(`/api/skills/${id}`, { method: "PATCH", ...json(body) }),
   deleteSkill: (id: string) => request<void>(`/api/skills/${id}`, { method: "DELETE" }),
 
-  capabilities: (projectId: string, type: "mcp" | "agent" | "skill") =>
+  globalTools: () => request<ListResponse<GlobalTool>>("/api/global-tools"),
+  createGlobalTool: (body: Omit<GlobalTool, "id" | "created_at" | "updated_at">) =>
+    request<GlobalTool>("/api/global-tools", { method: "POST", ...json(body) }),
+  updateGlobalTool: (id: string, body: Partial<Omit<GlobalTool, "id" | "created_at" | "updated_at">>) =>
+    request<GlobalTool>(`/api/global-tools/${id}`, { method: "PATCH", ...json(body) }),
+  deleteGlobalTool: (id: string) => request<void>(`/api/global-tools/${id}`, { method: "DELETE" }),
+
+  capabilities: (projectId: string, type: "mcp" | "agent" | "skill" | "tool") =>
     request<ListResponse<Capability>>(`/api/projects/${projectId}/capabilities/${type}`),
-  configureCapability: (projectId: string, type: "mcp" | "agent" | "skill", id: string, body: { enabled: boolean; config_override?: Record<string, unknown> }) =>
+  configureCapability: (projectId: string, type: "mcp" | "agent" | "skill" | "tool", id: string, body: { enabled: boolean; config_override?: Record<string, unknown> }) =>
     request<Capability>(`/api/projects/${projectId}/capabilities/${type}/${id}`, { method: "PUT", ...json(body) }),
   models: (backend: AgentBackend, refresh = false) =>
     request<ModelCatalog>(`/api/models/${backend}?refresh=${refresh}`),

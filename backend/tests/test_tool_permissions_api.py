@@ -10,8 +10,17 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.routes import projects, tools
-from app.db.models import AgentBackend, Task, TaskStatus, ToolApprovalRequest
+from app.db.models import (
+    AgentBackend,
+    GlobalTool,
+    Project,
+    ProjectCapabilityOverride,
+    Task,
+    TaskStatus,
+    ToolApprovalRequest,
+)
 from app.db.session import get_db
+from app.services.process_manager import process_manager
 
 
 @pytest.mark.asyncio
@@ -87,3 +96,47 @@ async def test_project_tool_rules_and_always_allow_resolution(
             item["config"].get("claude_pattern") == "Bash(gh *)"
             for item in project_rules.json()["items"]
         )
+
+
+@pytest.mark.asyncio
+async def test_global_tool_rules_are_inherited_and_can_be_disabled(db_engine):
+    session_local = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with session_local() as db:
+        project = Project(name="Runtime", default_backend=AgentBackend.codex)
+        global_tool = GlobalTool(
+            name="Workspace search",
+            config={
+                "backend": "all",
+                "decision": "allow",
+                "claude_pattern": "Grep",
+                "codex_prefix": ["rg"],
+            },
+        )
+        db.add_all([project, global_tool])
+        await db.flush()
+        task = Task(
+            project_id=project.id,
+            title="Search",
+            initial_prompt="Find references",
+            backend=AgentBackend.codex,
+        )
+        db.add(task)
+        await db.commit()
+
+        loaded = await process_manager._load_project(db, project.id)
+        assert loaded is not None
+        bindings = await process_manager._bindings_for(db, loaded, task)
+        assert bindings.tool_rules == [global_tool.config]
+
+        db.add(
+            ProjectCapabilityOverride(
+                project_id=project.id,
+                resource_type="tool",
+                resource_id=global_tool.id,
+                enabled=False,
+                config_override={},
+            )
+        )
+        await db.commit()
+        bindings = await process_manager._bindings_for(db, loaded, task)
+        assert bindings.tool_rules == []

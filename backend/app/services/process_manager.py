@@ -29,6 +29,7 @@ from app.db.models import (
     AgentProfile,
     DirectoryBinding,
     GlobalMcpServer,
+    GlobalTool,
     FailureClass,
     Message,
     MessageSender,
@@ -400,7 +401,24 @@ class ProcessManager:
                 )
             )
         ).scalars().all()
-        project_rules = [dict(tool.config or {}) for tool in project.tools]
+        global_tools = (await db.execute(select(GlobalTool))).scalars().all()
+        project_rules = [
+            {
+                **dict(tool.config or {}),
+                **(
+                    override_map[("tool", tool.id)].config_override
+                    if override_map.get(("tool", tool.id))
+                    else {}
+                ),
+            }
+            for tool in global_tools
+            if tool.enabled
+            and (
+                override_map.get(("tool", tool.id)) is None
+                or override_map[("tool", tool.id)].enabled
+            )
+        ]
+        project_rules.extend(dict(tool.config or {}) for tool in project.tools)
         project_rules.extend(dict(approval.permission_rule or {}) for approval in one_time_approvals)
 
         directory_paths = [
@@ -437,7 +455,37 @@ class ProcessManager:
             .limit(1)
         )
         msg = result.scalar_one_or_none()
-        return msg.content_text if msg else None
+        if msg is None:
+            return None
+        canvas = next(
+            (
+                item
+                for item in (msg.media or [])
+                if isinstance(item, dict)
+                and item.get("kind") == "magic_canvas"
+                and isinstance(item.get("content"), str)
+            ),
+            None,
+        )
+        if canvas is None:
+            return msg.content_text
+        canvas_payload = json.dumps(
+            {
+                "title": canvas.get("title"),
+                "format": canvas.get("format"),
+                "language": canvas.get("language"),
+                "content": canvas["content"],
+            },
+            ensure_ascii=False,
+        )
+        return (
+            f"{msg.content_text or ''}\n\n"
+            "The following Magic Canvas snapshot is the current artifact and the absolute "
+            "source of truth. Apply the user's requested changes to it instead of recreating "
+            "the artifact from older conversation text. Return the complete updated artifact "
+            "in one fenced block or as a complete Markdown document.\n"
+            f"<magic_canvas_snapshot>{canvas_payload}</magic_canvas_snapshot>"
+        )
 
     # -- stdout / stderr reading ------------------------------------------
 

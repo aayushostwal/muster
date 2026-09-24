@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.models import AgentBackend
 from app.schemas.mcp_server import McpConfig
+from app.schemas.tool import ToolRuleConfig
 
 
 class DirectoryResourceCreate(BaseModel):
@@ -128,6 +129,31 @@ class SkillRead(BaseModel):
     name: str
     description: str | None
     instructions: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class GlobalToolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    config: ToolRuleConfig
+    enabled: bool = True
+
+
+class GlobalToolUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    config: ToolRuleConfig | None = None
+    enabled: bool | None = None
+
+
+class GlobalToolRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    name: str
+    description: str | None
+    config: dict
     enabled: bool
     created_at: datetime
     updated_at: datetime

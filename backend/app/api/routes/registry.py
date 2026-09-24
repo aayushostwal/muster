@@ -12,6 +12,7 @@ from app.db.models import (
     AgentProfile,
     CapabilityImport,
     DirectoryResource,
+    GlobalTool,
     GlobalMcpServer,
     Project,
     ProjectCapabilityOverride,
@@ -30,6 +31,9 @@ from app.schemas.registry import (
     GlobalMcpCreate,
     GlobalMcpRead,
     GlobalMcpUpdate,
+    GlobalToolCreate,
+    GlobalToolRead,
+    GlobalToolUpdate,
     ModelCatalog,
     SkillCreate,
     SkillRead,
@@ -194,10 +198,47 @@ async def delete_skill(resource_id: uuid.UUID, db: AsyncSession = Depends(get_db
     await db.commit()
 
 
+@router.get("/global-tools")
+async def list_global_tools(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(GlobalTool).order_by(GlobalTool.name))).scalars().all()
+    return {"items": [GlobalToolRead.model_validate(row) for row in rows]}
+
+
+@router.post("/global-tools", status_code=201, response_model=GlobalToolRead)
+async def create_global_tool(body: GlobalToolCreate, db: AsyncSession = Depends(get_db)):
+    data = body.model_dump()
+    data["config"] = body.config.model_dump()
+    resource = GlobalTool(**data)
+    db.add(resource)
+    return await _commit(db, resource, "A global tool with this name already exists")
+
+
+@router.patch("/global-tools/{resource_id}", response_model=GlobalToolRead)
+async def update_global_tool(
+    resource_id: uuid.UUID, body: GlobalToolUpdate, db: AsyncSession = Depends(get_db)
+):
+    resource = await _get_or_404(db, GlobalTool, resource_id, "Global tool")
+    data = body.model_dump(exclude_unset=True)
+    if body.config is not None:
+        data["config"] = body.config.model_dump()
+    for key, value in data.items():
+        setattr(resource, key, value)
+    return await _commit(db, resource, "A global tool with this name already exists")
+
+
+@router.delete("/global-tools/{resource_id}", status_code=204)
+async def delete_global_tool(resource_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    resource = await _get_or_404(db, GlobalTool, resource_id, "Global tool")
+    await _delete_capability_metadata(db, "tool", resource_id)
+    await db.delete(resource)
+    await db.commit()
+
+
 _CAPABILITY_MODELS = {
     "mcp": GlobalMcpServer,
     "agent": AgentProfile,
     "skill": Skill,
+    "tool": GlobalTool,
 }
 
 

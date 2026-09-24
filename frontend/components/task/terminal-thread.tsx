@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from "react";
 
 import { MarkdownContent } from "@/components/ui/markdown-content";
+import { extractMagicArtifact } from "@/lib/magic-canvas";
 import { Skeleton } from "@/components/ui/states";
 import type { Message, Task, TaskInvocation } from "@/lib/types";
 import { backendLabel, cn, formatDateTime } from "@/lib/utils";
@@ -27,11 +28,13 @@ export function TerminalThread({
   messages,
   invocations,
   loading,
+  onOpenCanvas,
 }: {
   task: Task;
   messages: Message[];
   invocations: TaskInvocation[];
   loading: boolean;
+  onOpenCanvas?: () => void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -95,7 +98,7 @@ export function TerminalThread({
               item.type === "intermediate" ? (
                 <IntermediateResponses key={item.id} messages={item.messages} backend={task.backend} />
               ) : (
-                <TerminalMessage key={item.message.id} message={item.message} backend={task.backend} />
+                <TerminalMessage key={item.message.id} message={item.message} backend={task.backend} onOpenCanvas={onOpenCanvas} />
               ),
             )}
           </AnimatePresence>
@@ -157,7 +160,7 @@ function TerminalBrief({ task, collapsed }: { task: Task; collapsed: boolean }) 
   );
 }
 
-function TerminalMessage({ message, backend }: { message: Message; backend: Task["backend"] }) {
+function TerminalMessage({ message, backend, onOpenCanvas }: { message: Message; backend: Task["backend"]; onOpenCanvas?: () => void }) {
   if (message.sender === "system") {
     return (
       <motion.div
@@ -176,6 +179,7 @@ function TerminalMessage({ message, backend }: { message: Message; backend: Task
   }
 
   const user = message.sender === "user";
+  const artifact = extractMagicArtifact(message);
   return (
     <motion.article
       layout
@@ -202,7 +206,13 @@ function TerminalMessage({ message, backend }: { message: Message; backend: Task
           {!user && message.is_blocking_question && <span className="rounded bg-amber-400/10 px-1.5 py-0.5 text-amber-300">input required</span>}
           <span className="ml-auto normal-case tracking-normal text-slate-800">{formatDateTime(message.created_at)}</span>
         </div>
-        <MarkdownContent content={message.content_text ?? ""} />
+        {artifact ? (
+          <button type="button" onClick={onOpenCanvas} className="group flex w-full items-center gap-3 rounded-xl border border-pulse-400/15 bg-pulse-400/[0.045] p-3 text-left transition hover:border-pulse-400/30 hover:bg-pulse-400/[0.07]">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-pulse-400/20 bg-pulse-400/10 text-pulse-400"><Sparkles className="h-4 w-4" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-xs font-medium text-slate-200">Updated Magic Canvas</span><span className="mt-0.5 block truncate text-[0.64rem] text-slate-600">{artifact.title} · {artifact.format}</span></span>
+            <span className="text-[0.62rem] text-pulse-300 transition group-hover:translate-x-0.5">Open canvas →</span>
+          </button>
+        ) : <MarkdownContent content={message.content_text ?? ""} />}
       </div>
     </motion.article>
   );
