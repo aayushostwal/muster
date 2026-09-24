@@ -88,9 +88,14 @@ class CodexAdapter:
         project: Project,
         bindings: AdapterBindings,
         secrets: dict[str, str],
+        prompt: str | None = None,
     ) -> list[str]:
-        cmd = [settings.codex_bin, "exec", self._prompt(task, bindings, task.initial_prompt), "--json"]
-        model = task.model or project.default_model
+        cmd = [settings.codex_bin, "exec", self._prompt(task, bindings, prompt or task.initial_prompt), "--json"]
+        model = task.model or (
+            project.default_model
+            if getattr(task, "backend", None) == getattr(project, "default_backend", None)
+            else None
+        )
         if model:
             cmd += ["--model", model]
         cmd += ["--sandbox", "workspace-write", "-c", 'approval_policy="on-request"']
@@ -112,7 +117,11 @@ class CodexAdapter:
         prompt: str,
     ) -> list[str]:
         cmd = [settings.codex_bin, "exec", "resume", session_id, self._prompt(task, bindings, prompt), "--json"]
-        model = task.model or project.default_model
+        model = task.model or (
+            project.default_model
+            if getattr(task, "backend", None) == getattr(project, "default_backend", None)
+            else None
+        )
         if model:
             cmd += ["--model", model]
         # `exec resume` restores the original sandbox and writable roots and

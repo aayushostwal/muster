@@ -84,6 +84,7 @@ class RunningProcess:
     blocking_question_hit: bool = False
     cancel_requested: bool = False
     restart_requested: bool = False
+    switch_requested: bool = False
     pending_tool_calls: dict[str, tuple[str, dict]] = field(default_factory=dict)
     permission_requests: set[str] = field(default_factory=set)
 
@@ -234,6 +235,115 @@ class ProcessManager:
 
             await self._spawn(task_id)
 
+    async def switch_backend(self, task_id: uuid.UUID, backend: AgentBackend) -> None:
+        """Move an existing task to another runtime using a fresh native session.
+
+        Backend session handles and model identifiers are runtime-specific, so
+        neither is carried across the boundary. The prior task conversation is
+        converted into a bounded handoff prompt for the first invocation on the
+        new backend; persisted messages and invocation telemetry remain intact.
+        """
+        async with self._lock_for(task_id):
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None:
+                    logger.warning("runtime switch requested for unknown task %s", task_id)
+                    return
+                if task.backend == backend:
+                    return
+                previous_backend = task.backend
+
+            pending_retry = self._pending_retries.pop(task_id, None)
+            if pending_retry is not None:
+                pending_retry.cancel()
+
+            running = self._running.get(task_id)
+            if running is not None:
+                # Prevent normal exit classification while the old runtime is
+                # intentionally replaced by a fresh backend invocation.
+                running.switch_requested = True
+                if running.process.returncode is None:
+                    try:
+                        running.process.terminate()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            running.process.wait(), timeout=_FORCE_KILL_GRACE
+                        )
+                    except asyncio.TimeoutError:
+                        try:
+                            running.process.kill()
+                        except ProcessLookupError:
+                            pass
+                        await running.process.wait()
+                if (
+                    running.reader_task is not None
+                    and running.reader_task is not asyncio.current_task()
+                ):
+                    await running.reader_task
+            now = datetime.now(timezone.utc)
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None:
+                    return
+                # Build the handoff after the previous process has fully
+                # exited so its final persisted output is not omitted.
+                handoff_prompt = await self._runtime_handoff_prompt_db(
+                    db, task, previous_backend, backend
+                )
+                # A selected agent and model chain may only exist on the old
+                # runtime. Fall back to the destination runtime's defaults.
+                task.backend = backend
+                task.agent_id = None
+                task.model = None
+                task.fallback_models = []
+                task.session_id = None
+                task.status = TaskStatus.queued
+                task.completed_at = None
+
+                pending_approvals = (
+                    await db.execute(
+                        select(ToolApprovalRequest).where(
+                            ToolApprovalRequest.task_id == task_id,
+                            ToolApprovalRequest.status == "pending",
+                        )
+                    )
+                ).scalars().all()
+                for approval in pending_approvals:
+                    approval.status = "superseded"
+                    approval.resolution_scope = "runtime_switch"
+                    approval.resolved_at = now
+
+                message = Message(
+                    task_id=task_id,
+                    sender=MessageSender.system,
+                    content_text=(
+                        f"Runtime switched from {_backend_label(previous_backend)} to "
+                        f"{_backend_label(backend)}. A fresh {_backend_label(backend)} "
+                        "session is starting with a handoff of the prior conversation. "
+                        "Runtime-specific agent and model selections were reset."
+                    ),
+                )
+                db.add(message)
+                await db.commit()
+                await db.refresh(message)
+                for approval in pending_approvals:
+                    await db.refresh(approval)
+
+            await self._append_transcript(task_id, "system", message.content_text or "")
+            await broadcast(task_id, {"type": "status", "status": TaskStatus.queued.value})
+            await broadcast(
+                task_id, {"type": "message", "message": _serialize_message(message)}
+            )
+            for approval in pending_approvals:
+                await broadcast(
+                    task_id,
+                    {"type": "tool_approval", "approval": _serialize_tool_approval(approval)},
+                )
+
+            await self._spawn(task_id, initial_prompt=handoff_prompt)
+
     async def resume_after_approval(self, task_id: uuid.UUID) -> None:
         """Stop an approval-blocked CLI turn, then resume it with the new rule set."""
         running = self._running.get(task_id)
@@ -280,7 +390,7 @@ class ProcessManager:
         except (ConnectionResetError, BrokenPipeError, RuntimeError):
             logger.debug("stdin delivery failed for task %s; will resume next trigger", task_id)
 
-    async def _spawn(self, task_id: uuid.UUID) -> None:
+    async def _spawn(self, task_id: uuid.UUID, initial_prompt: str | None = None) -> None:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None:
@@ -319,8 +429,9 @@ class ProcessManager:
                 cmd = adapter.resume_command(task, project, bindings, secrets, task.session_id, prompt)
                 await self._append_transcript(task_id, "user", prompt)
             else:
-                cmd = adapter.build_command(task, project, bindings, secrets)
-                await self._append_transcript(task_id, "user", task.initial_prompt)
+                prompt = initial_prompt or task.initial_prompt
+                cmd = adapter.build_command(task, project, bindings, secrets, prompt)
+                await self._append_transcript(task_id, "user", prompt)
 
             task.status = TaskStatus.running
             if task.started_at is None:
@@ -330,7 +441,9 @@ class ProcessManager:
                 task_id=task_id,
                 sequence=len(previous.scalars().all()) + 1,
                 backend=task.backend,
-                model=task.model or project.default_model,
+                model=task.model or (
+                    project.default_model if task.backend == project.default_backend else None
+                ),
                 thinking_level=task.thinking_level,
                 status="running",
             )
@@ -537,6 +650,79 @@ class ProcessManager:
     async def _latest_user_prompt(self, task_id: uuid.UUID) -> str | None:
         async with SessionLocal() as db:
             return await self._latest_user_prompt_db(db, task_id)
+
+    @staticmethod
+    async def _runtime_handoff_prompt_db(
+        db: AsyncSession,
+        task: Task,
+        previous_backend: AgentBackend,
+        next_backend: AgentBackend,
+    ) -> str:
+        result = await db.execute(
+            select(Message).where(Message.task_id == task.id).order_by(Message.created_at)
+        )
+        messages = result.scalars().all()
+        invocation_result = await db.execute(
+            select(TaskInvocation)
+            .where(TaskInvocation.task_id == task.id)
+            .order_by(TaskInvocation.started_at)
+        )
+        invocations = invocation_result.scalars().all()
+        rendered: list[str] = []
+        for message in messages:
+            content = (message.content_text or "").strip()
+            canvas_snapshots = [
+                item
+                for item in (message.media or [])
+                if isinstance(item, dict)
+                and item.get("kind") == "magic_canvas"
+                and isinstance(item.get("content"), str)
+            ]
+            if canvas_snapshots:
+                content += (
+                    "\n\n<magic_canvas_snapshots>"
+                    + json.dumps(canvas_snapshots, ensure_ascii=False)
+                    + "</magic_canvas_snapshots>"
+                )
+            if not content:
+                continue
+            label = "USER" if message.sender == MessageSender.user else "SYSTEM"
+            if message.sender == MessageSender.agent:
+                created_at = _timestamp(message.created_at)
+                invocation = next(
+                    (
+                        item
+                        for item in reversed(invocations)
+                        if _timestamp(item.started_at) <= created_at
+                        and (
+                            item.completed_at is None
+                            or created_at <= _timestamp(item.completed_at)
+                        )
+                    ),
+                    None,
+                )
+                label = _backend_label(
+                    invocation.backend if invocation is not None else previous_backend
+                ).upper()
+            rendered.append(f"[{label}]\n{content}")
+
+        conversation = "\n\n".join(rendered)
+        max_conversation_chars = 18_000
+        if len(conversation) > max_conversation_chars:
+            conversation = (
+                "[Earlier conversation omitted to fit the runtime handoff.]\n\n"
+                + conversation[-max_conversation_chars:]
+            )
+        brief = task.initial_prompt[:8_000]
+        return (
+            f"You are taking over an existing task from {_backend_label(previous_backend)}. "
+            f"Continue it using {_backend_label(next_backend)} in the current project working "
+            "directory. Inspect the current files before changing them; the working tree is the "
+            "source of truth. Do not redo completed work.\n\n"
+            f"ORIGINAL BRIEF\n{brief}\n\n"
+            f"PRIOR CONVERSATION\n{conversation or '[No persisted conversation messages]'}\n\n"
+            "Continue from the latest state and report what you do next."
+        )
 
     @staticmethod
     async def _latest_user_prompt_db(db: AsyncSession, task_id: uuid.UUID) -> str | None:
@@ -792,7 +978,7 @@ class ProcessManager:
             if invocation is not None:
                 invocation.status = (
                     "cancelled"
-                    if running.cancel_requested or running.restart_requested
+                    if running.cancel_requested or running.restart_requested or running.switch_requested
                     else "completed"
                     if exit_code == 0
                     else "failed"
@@ -809,6 +995,10 @@ class ProcessManager:
 
         if running.restart_requested:
             # restart_from_beginning owns the next status transition and spawn.
+            return
+
+        if running.switch_requested:
+            # switch_backend owns the next status transition and spawn.
             return
 
         if running.blocking_question_hit:
@@ -967,6 +1157,16 @@ def _command_tokens(tool_input: dict) -> list[str]:
         return shlex.split(command)
     except ValueError:
         return command.split()
+
+
+def _backend_label(backend: AgentBackend) -> str:
+    return "Claude Code" if backend == AgentBackend.claude_code else "Codex"
+
+
+def _timestamp(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.timestamp()
 
 
 def _suggest_permission_rule(

@@ -44,6 +44,10 @@ class TaskModelUpdate(BaseModel):
     model: str
 
 
+class TaskBackendUpdate(BaseModel):
+    backend: AgentBackend
+
+
 class TaskModelsUpdate(BaseModel):
     models: list[str]
 

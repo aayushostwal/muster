@@ -124,7 +124,7 @@ export interface ToolApproval {
   permission_rule: ToolRuleConfig;
   reason: string | null;
   status: "pending" | "approved_once" | "approved_project" | "denied" | "consumed" | "superseded";
-  resolution_scope: "once" | "project" | "restart" | null;
+  resolution_scope: "once" | "project" | "restart" | "runtime_switch" | null;
   created_at: string;
   resolved_at: string | null;
 }

@@ -116,6 +116,7 @@ POST   /api/tasks/{id}/cancel
 POST   /api/tasks/{id}/restart             # stop any live invocation and start a new native
                                             # session from Task.initial_prompt; preserve history
 POST   /api/tasks/{id}/retry-now           # skip backoff wait, retry immediately
+PATCH  /api/tasks/{id}/backend             {backend}     # switch Claude Code/Codex using a fresh session + conversation handoff
 PATCH  /api/tasks/{id}/model               {model}       # switch model mid-conversation
 PATCH  /api/tasks/{id}/models              {models}      # ordered primary/fallback model chain
 PATCH  /api/tasks/{id}/thinking-level      {thinking_level}
@@ -188,11 +189,18 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
    - on nonzero exit, classifies the failure (see Failure Handling) and
      either schedules a retry or flips to `failed` and waits.
 
+`switch_backend(task_id, backend)` stops any active invocation, supersedes
+pending runtime-specific approvals, clears the native session id, selected
+agent, and model chain, then starts the destination runtime in a fresh native
+session. The first prompt contains the original brief and a bounded handoff of
+the persisted conversation. Existing messages and invocation records remain
+available for audit and are rendered with their original runtime labels.
+
 ### Agent backends (`backend/app/services/agent_backends/`)
 
 `base.py` defines `class AgentBackendAdapter(Protocol)` with:
 ```python
-def build_command(self, task, project, bindings, secrets) -> list[str]: ...
+def build_command(self, task, project, bindings, secrets, prompt: str | None = None) -> list[str]: ...
 def parse_line(self, raw: str) -> ParsedEvent | None: ...   # -> AgentText | BlockingQuestion | SessionId | Done | ErrorEvent
 def resume_command(self, task, project, bindings, secrets, session_id: str) -> list[str]: ...
 ```
@@ -266,13 +274,15 @@ class ProcessManager:
     async def trigger(self, task_id: uuid.UUID) -> None: ...
     async def cancel(self, task_id: uuid.UUID) -> None: ...
     async def retry_now(self, task_id: uuid.UUID) -> None: ...
+    async def restart_from_beginning(self, task_id: uuid.UUID) -> None: ...
+    async def switch_backend(self, task_id: uuid.UUID, backend: AgentBackend) -> None: ...
 
 process_manager = ProcessManager()
 ```
 
 Routes call `await process_manager.trigger(task.id)` after creating a Task
-and after persisting a new user Message; `cancel`/`retry_now` back
-`/api/tasks/{id}/cancel` and `/api/tasks/{id}/retry-now`. All three open
+and after persisting a new user Message; the lifecycle methods back their
+corresponding task actions, including runtime switching. All methods open
 their own DB session internally (they don't take one as an argument) so
 routes never need to pass session state across the fire-and-forget boundary.
 

@@ -15,6 +15,7 @@ from app.services.agent_backends.base import (
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
 from app.services.agent_backends.codex import CodexAdapter
 from app.services.agent_backends.codex import create_codex_home_overlay
+from app.db.models import AgentBackend
 
 
 def test_codex_parses_session_activity_and_usage():
@@ -236,6 +237,71 @@ def test_codex_uses_primary_directory_and_additional_roots():
     assert "--cd" not in resumed
     assert "--add-dir" not in resumed
     assert "--sandbox" not in resumed
+
+
+def test_fresh_session_commands_accept_runtime_handoff_prompt():
+    bindings = AdapterBindings(
+        primary_directory="/workspace/repo",
+        directories=["/workspace/repo"],
+        mcp_servers={},
+        tool_rules=[],
+        agent_profiles={},
+        skills={},
+    )
+    task = type(
+        "TaskStub",
+        (),
+        {
+            "initial_prompt": "Original prompt",
+            "model": None,
+            "fallback_models": [],
+            "thinking_level": None,
+        },
+    )()
+    project = type("ProjectStub", (), {"default_model": None})()
+
+    claude = ClaudeCodeAdapter().build_command(
+        task, project, bindings, {}, "Runtime handoff"
+    )
+    codex = CodexAdapter().build_command(task, project, bindings, {}, "Runtime handoff")
+
+    assert claude[claude.index("-p") + 1] == "Runtime handoff"
+    assert "Runtime handoff" in codex
+    assert "Original prompt" not in codex
+
+
+def test_project_default_model_does_not_cross_runtime_boundary():
+    bindings = AdapterBindings(
+        primary_directory="/workspace/repo",
+        directories=["/workspace/repo"],
+        mcp_servers={},
+        tool_rules=[],
+        agent_profiles={},
+        skills={},
+    )
+    task = type(
+        "TaskStub",
+        (),
+        {
+            "initial_prompt": "Continue",
+            "backend": AgentBackend.codex,
+            "model": None,
+            "thinking_level": None,
+        },
+    )()
+    project = type(
+        "ProjectStub",
+        (),
+        {
+            "default_backend": AgentBackend.claude_code,
+            "default_model": "claude-sonnet",
+        },
+    )()
+
+    command = CodexAdapter().build_command(task, project, bindings, {})
+
+    assert "--model" not in command
+    assert "claude-sonnet" not in command
 
 
 def test_codex_home_overlay_layers_project_rules(monkeypatch, tmp_path):

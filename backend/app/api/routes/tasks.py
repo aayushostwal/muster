@@ -19,7 +19,7 @@ from app.schemas.context_snapshot import ContextSnapshotRead
 from app.schemas.activity import TaskEventRead, TaskInvocationRead
 from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.run_attempt import TaskRunAttemptRead
-from app.schemas.task import TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskTagsUpdate, TaskThinkingUpdate
+from app.schemas.task import TaskBackendUpdate, TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskTagsUpdate, TaskThinkingUpdate
 from app.services.process_manager import process_manager
 
 router = APIRouter(tags=["tasks"])
@@ -132,6 +132,16 @@ async def restart_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def retry_now_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     task = await _get_task_or_404(db, task_id)
     await process_manager.retry_now(task_id)
+    await db.refresh(task)
+    return task
+
+
+@router.patch("/tasks/{task_id}/backend", response_model=TaskRead)
+async def update_task_backend(
+    task_id: uuid.UUID, body: TaskBackendUpdate, db: AsyncSession = Depends(get_db)
+):
+    task = await _get_task_or_404(db, task_id)
+    await process_manager.switch_backend(task.id, body.backend)
     await db.refresh(task)
     return task
 
