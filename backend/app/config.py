@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     retry_max_seconds: int = 900
     retry_max_attempts: int = 8
 
+    # Agent subprocess safety limits. A backend that stops emitting structured
+    # events must not leave a task looking live forever.
+    runtime_startup_timeout_seconds: float = 60
+    runtime_idle_timeout_seconds: float = 1200
+    runtime_max_seconds: float = 7200
+    runtime_watchdog_interval_seconds: float = 5
+    runtime_stream_limit_bytes: int = 8 * 1024 * 1024
+
     @property
     def database_url(self) -> str:
         return (

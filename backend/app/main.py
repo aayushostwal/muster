@@ -18,15 +18,18 @@ from app.api.routes import (
     ws,
 )
 from app.services.cron_scheduler import scheduler, sync_jobs_from_db
+from app.services.process_manager import process_manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
+    await process_manager.reconcile_interrupted_tasks()
     scheduler.start()
     sync_jobs_from_db()
     yield
     scheduler.shutdown()
+    await process_manager.shutdown()
 
 
 app = FastAPI(title="Muster", version="0.1.0", lifespan=lifespan)

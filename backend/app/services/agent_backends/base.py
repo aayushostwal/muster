@@ -87,6 +87,14 @@ ParsedEvent = Union[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class BackendCommand:
+    """A backend invocation and the optional data written to its stdin."""
+
+    argv: list[str]
+    stdin_payload: str | None = None
+
+
 class AgentBackendAdapter(Protocol):
     """Translation layer between Muster's process manager and a backend CLI."""
 
@@ -99,7 +107,7 @@ class AgentBackendAdapter(Protocol):
         bindings: "AdapterBindings",
         secrets: dict[str, str],
         prompt: str | None = None,
-    ) -> list[str]:
+    ) -> BackendCommand:
         """Build the argv for the first turn of a task (no prior session)."""
         ...
 
@@ -111,7 +119,7 @@ class AgentBackendAdapter(Protocol):
         secrets: dict[str, str],
         session_id: str,
         prompt: str,
-    ) -> list[str]:
+    ) -> BackendCommand:
         """Build the argv to continue a task, given its backend session id."""
         ...
 

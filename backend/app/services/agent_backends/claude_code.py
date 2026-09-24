@@ -10,6 +10,7 @@ from app.services.agent_backends.base import (
     AdapterBindings,
     ActivityEvent,
     AgentText,
+    BackendCommand,
     Done,
     ErrorEvent,
     ParsedEvent,
@@ -163,10 +164,10 @@ class ClaudeCodeAdapter:
         bindings: AdapterBindings,
         secrets: dict[str, str],
         prompt: str | None = None,
-    ) -> list[str]:
+    ) -> BackendCommand:
         cmd = [settings.claude_code_bin, "-p", prompt or task.initial_prompt]
         cmd += self._base_flags(task, project, bindings, secrets)
-        return cmd
+        return BackendCommand(argv=cmd)
 
     def resume_command(
         self,
@@ -176,10 +177,10 @@ class ClaudeCodeAdapter:
         secrets: dict[str, str],
         session_id: str,
         prompt: str,
-    ) -> list[str]:
+    ) -> BackendCommand:
         cmd = [settings.claude_code_bin, "--resume", session_id, "-p", prompt]
         cmd += self._base_flags(task, project, bindings, secrets)
-        return cmd
+        return BackendCommand(argv=cmd)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()
