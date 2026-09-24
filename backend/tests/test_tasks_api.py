@@ -7,6 +7,7 @@ so these tests only assert that the routes call into it correctly.
 """
 from __future__ import annotations
 
+import uuid
 from unittest.mock import AsyncMock
 
 import pytest
@@ -116,13 +117,22 @@ async def test_posting_a_message_persists_it_and_triggers_process_manager(
         task_id = resp.json()["id"]
         assert trigger_mock.await_count == 1
 
+        canvas = {
+            "kind": "magic_canvas",
+            "title": "Login PRD",
+            "format": "markdown",
+            "language": "markdown",
+            "content": "# Login PRD\n\nCurrent source of truth.",
+        }
         resp = await client.post(
-            f"/api/tasks/{task_id}/messages", json={"content_text": "here is more context"}
+            f"/api/tasks/{task_id}/messages",
+            json={"content_text": "here is more context", "media": [canvas]},
         )
         assert resp.status_code == 201
         message = resp.json()
         assert message["sender"] == "user"
         assert message["content_text"] == "here is more context"
+        assert message["media"] == [canvas]
         assert message["task_id"] == task_id
 
         # trigger called again for the follow-up message
@@ -131,3 +141,16 @@ async def test_posting_a_message_persists_it_and_triggers_process_manager(
         resp = await client.get(f"/api/tasks/{task_id}/messages")
         assert resp.status_code == 200
         assert len(resp.json()["items"]) == 1
+
+        db_generator = override_get_db()
+        db = await anext(db_generator)
+        try:
+            enriched_prompt = await process_manager._latest_user_prompt_db(
+                db, uuid.UUID(task_id)
+            )
+        finally:
+            await db_generator.aclose()
+        assert enriched_prompt is not None
+        assert enriched_prompt.startswith("here is more context")
+        assert "absolute source of truth" in enriched_prompt
+        assert "Current source of truth." in enriched_prompt

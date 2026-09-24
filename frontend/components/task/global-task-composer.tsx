@@ -18,6 +18,8 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
+import { SlashCommandMenu } from "@/components/task/slash-command-menu";
+import { SLASH_PATTERN, useSlashCommands, type SlashCommandItem } from "@/hooks/use-slash-commands";
 import { api } from "@/lib/api";
 import type { Project } from "@/lib/types";
 import { cn, initials } from "@/lib/utils";
@@ -30,12 +32,15 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
   const [project, setProject] = useState<Project | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [error, setError] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const router = useRouter();
   const queryClient = useQueryClient();
   const toast = useToast();
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const slashCommands = useSlashCommands(slashQuery);
 
   const suggestions = useMemo(() => {
     const items = projects.data?.items ?? [];
@@ -96,6 +101,8 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
     setProject(null);
     setMentionQuery(null);
     setActiveIndex(0);
+    setSlashQuery(null);
+    setSlashActiveIndex(0);
     setError("");
   };
 
@@ -120,10 +127,27 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
   const changePrompt = (value: string) => {
     setPrompt(value);
     setError("");
-    const match = value.match(MENTION_PATTERN);
-    setMentionQuery(match?.[1] ?? null);
+    const mentionMatch = value.match(MENTION_PATTERN);
+    setMentionQuery(mentionMatch?.[1] ?? null);
     setActiveIndex(0);
+    const slashMatch = mentionMatch ? null : value.match(SLASH_PATTERN);
+    setSlashQuery(slashMatch?.[1] ?? null);
+    setSlashActiveIndex(0);
     if (project && !value.includes(`@${project.name}`)) setProject(null);
+  };
+
+  const selectSlashCommand = (item: SlashCommandItem) => {
+    const match = prompt.match(SLASH_PATTERN);
+    const insertion = `/${item.name} `;
+    setPrompt(
+      match
+        ? `${prompt.slice(0, match.index)}${match[0].startsWith(" ") ? " " : ""}${insertion}`
+        : `${insertion}${prompt}`,
+    );
+    setSlashQuery(null);
+    setSlashActiveIndex(0);
+    setError("");
+    requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const submit = () => {
@@ -149,9 +173,26 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
         return;
       }
     }
+    if (slashQuery !== null && slashCommands.suggestions.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setSlashActiveIndex((current) =>
+          event.key === "ArrowDown"
+            ? (current + 1) % slashCommands.suggestions.length
+            : (current - 1 + slashCommands.suggestions.length) % slashCommands.suggestions.length,
+        );
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        selectSlashCommand(slashCommands.suggestions[slashActiveIndex] ?? slashCommands.suggestions[0]);
+        return;
+      }
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       if (mentionQuery !== null) setMentionQuery(null);
+      else if (slashQuery !== null) setSlashQuery(null);
       else reset();
       return;
     }
@@ -236,19 +277,23 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
                 value={prompt}
                 onChange={(event) => changePrompt(event.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Describe the task and type @ to choose a project…"
+                placeholder="Describe the task, @ to choose a project, / for an agent or skill…"
                 className="min-h-28 w-full resize-none bg-transparent px-1 py-1 text-sm leading-6 text-slate-200 outline-none placeholder:text-slate-700"
                 aria-label="Task instructions"
                 role="combobox"
                 aria-haspopup="listbox"
                 aria-autocomplete="list"
-                aria-controls={mentionQuery !== null ? "project-mention-list" : undefined}
+                aria-controls={
+                  mentionQuery !== null ? "project-mention-list" : slashQuery !== null ? "slash-command-list" : undefined
+                }
                 aria-activedescendant={
                   mentionQuery !== null && suggestions[activeIndex]
                     ? `project-mention-${suggestions[activeIndex].id}`
-                    : undefined
+                    : slashQuery !== null && slashCommands.suggestions[slashActiveIndex]
+                      ? `slash-command-${slashCommands.suggestions[slashActiveIndex].id}`
+                      : undefined
                 }
-                aria-expanded={mentionQuery !== null}
+                aria-expanded={mentionQuery !== null || slashQuery !== null}
                 disabled={createTask.isPending}
               />
 
@@ -299,6 +344,17 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              <SlashCommandMenu
+                open={slashQuery !== null}
+                loading={slashCommands.isPending}
+                error={slashCommands.isError}
+                items={slashCommands.suggestions}
+                activeIndex={slashActiveIndex}
+                onHover={setSlashActiveIndex}
+                onSelect={selectSlashCommand}
+                className="absolute inset-x-3 bottom-3"
+              />
             </div>
 
             {error && (

@@ -62,7 +62,12 @@ POST   /api/skills                         {name, description?, instructions, en
 PATCH  /api/skills/{id}
 DELETE /api/skills/{id}
 
-GET    /api/projects/{id}/capabilities/{mcp|agent|skill}
+GET    /api/global-tools
+POST   /api/global-tools                   {name, description?, config, enabled?}
+PATCH  /api/global-tools/{id}
+DELETE /api/global-tools/{id}
+
+GET    /api/projects/{id}/capabilities/{mcp|agent|skill|tool}
 PUT    /api/projects/{id}/capabilities/{type}/{resource_id}  {enabled, config_override?}
 
 GET    /api/models/{claude_code|codex}     one-hour cached local CLI catalog
@@ -167,7 +172,7 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
    user message to its stdin (continued conversation) instead of spawning again.
 2. Else: require the Project's read/write primary directory, mark Task
    `running`, resolve explicitly bound global directories and
-   globally enabled MCP/agent/skill resources with project overrides, load
+   globally enabled MCP/agent/skill/tool resources with project overrides, load
    decrypted secrets, build the backend-specific command, spawn via
    `asyncio.create_subprocess_exec` with the primary directory as `cwd`, and
    start a reader task that:
@@ -297,7 +302,7 @@ initial_prompt=cron_job.prompt, cron_job_id=cron_job.id) and calls
 ## Frontend (`frontend/`, Next.js + TypeScript + Tailwind)
 
 Routes: `/` (project command center), `/registry/:kind` (global directories,
-MCP connectors, agents, and skills), `/projects/:id` (project profile and
+MCP connectors, agents, skills, and tool policies), `/projects/:id` (project profile and
 capability access), `/projects/:id/board` (task board), and `/tasks/:id`
 (compact chat, activity timeline, multi-agent view, invocation telemetry,
 model/thinking/context controls, and transcript).

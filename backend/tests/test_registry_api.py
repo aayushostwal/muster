@@ -86,6 +86,42 @@ async def test_global_registry_and_project_access(override_get_db):
         assert agent_response.status_code == 201
         agent = agent_response.json()
 
+        tool_response = await client.post(
+            "/api/global-tools",
+            json={
+                "name": "Workspace search",
+                "description": "Search source safely",
+                "config": {
+                    "backend": "all",
+                    "decision": "allow",
+                    "claude_pattern": "Grep",
+                    "codex_prefix": ["rg"],
+                },
+            },
+        )
+        assert tool_response.status_code == 201
+        tool = tool_response.json()
+        assert tool["enabled"] is True
+
+        tool_capabilities = await client.get(
+            f"/api/projects/{project_id}/capabilities/tool"
+        )
+        assert tool_capabilities.status_code == 200
+        assert tool_capabilities.json()["items"][0]["name"] == "Workspace search"
+        tool_override = await client.put(
+            f"/api/projects/{project_id}/capabilities/tool/{tool['id']}",
+            json={"enabled": False, "config_override": {}},
+        )
+        assert tool_override.status_code == 200
+        assert tool_override.json()["enabled"] is False
+
+        updated_tool = await client.patch(
+            f"/api/global-tools/{tool['id']}",
+            json={"description": "Search approved workspace roots"},
+        )
+        assert updated_tool.status_code == 200
+        assert updated_tool.json()["description"] == "Search approved workspace roots"
+
         capabilities = await client.get(f"/api/projects/{project_id}/capabilities/agent")
         assert capabilities.status_code == 200
         assert capabilities.json()["items"][0]["enabled"] is True
@@ -106,6 +142,7 @@ async def test_global_registry_and_project_access(override_get_db):
         assert updated.status_code == 200
         assert updated.json()["description"] == "Production review agent"
         assert (await client.delete(f"/api/agents/{agent['id']}")).status_code == 204
+        assert (await client.delete(f"/api/global-tools/{tool['id']}")).status_code == 204
 
 
 @pytest.mark.asyncio
