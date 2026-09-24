@@ -72,6 +72,7 @@ class TaskRead(BaseModel):
     title: str
     initial_prompt: str
     status: TaskStatus
+    attention_reason: str | None
     backend: AgentBackend
     model: str | None
     fallback_models: list[str]

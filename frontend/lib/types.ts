@@ -8,6 +8,7 @@ export type TaskStatus =
   | "cancelled";
 export type AccessScope = "read" | "read_write";
 export type MessageSender = "user" | "agent" | "system";
+export type PrPolicy = "manual" | "preferred" | "required";
 
 export interface Project {
   id: string;
@@ -17,6 +18,13 @@ export interface Project {
   default_model: string | null;
   default_context_strategy: string;
   primary_directory_id: string | null;
+  pr_policy: PrPolicy;
+  pr_provider: string;
+  pr_remote_name: string;
+  pr_branch_prefix: string;
+  pr_base_branch: string | null;
+  pr_validation_command: string | null;
+  pr_draft_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -28,6 +36,23 @@ export interface ProjectInput {
   default_model?: string | null;
   default_context_strategy?: string;
   primary_directory_id?: string | null;
+  pr_policy?: PrPolicy;
+  pr_provider?: string;
+  pr_remote_name?: string;
+  pr_branch_prefix?: string;
+  pr_base_branch?: string | null;
+  pr_validation_command?: string | null;
+  pr_draft_default?: boolean;
+}
+
+export interface ProjectTaskTag {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: "system" | "preset" | "custom";
+  color: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Task {
@@ -36,6 +61,8 @@ export interface Task {
   title: string;
   initial_prompt: string;
   status: TaskStatus;
+  /** Only meaningful while status === "waiting_on_you". */
+  attention_reason: "blocking_question" | "tool_permission" | "awaiting_review" | null;
   backend: AgentBackend;
   model: string | null;
   fallback_models: string[];
@@ -316,18 +343,75 @@ export interface ContextSnapshot {
   created_at: string;
 }
 
+export type PrDeliveryStatus =
+  | "awaiting_confirmation"
+  | "validating"
+  | "pushing"
+  | "creating_pr"
+  | "succeeded"
+  | "failed"
+  | "rejected";
+
+export interface PrDeliveryRun {
+  id: string;
+  task_id: string;
+  project_id: string;
+  status: PrDeliveryStatus;
+  provider: string;
+  repository: string | null;
+  remote_name: string;
+  head_branch: string | null;
+  base_branch: string | null;
+  draft: boolean;
+  file_paths: string[];
+  excluded_paths: string[];
+  commit_message: string | null;
+  pr_title: string | null;
+  pr_body: string | null;
+  validation_command: string | null;
+  validation_output: string | null;
+  pr_url: string | null;
+  pr_number: number | null;
+  pr_state: string | null;
+  error_message: string | null;
+  completion_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}
+
+export interface PrDeliveryEligibility {
+  policy: PrPolicy;
+  is_git_repo: boolean;
+  has_remote: boolean;
+  remote_name: string;
+  remote_url: string | null;
+  current_branch: string | null;
+  detached_head: boolean;
+  is_protected_branch: boolean;
+  baseline_captured: boolean;
+  dirty_paths: string[];
+  eligible_paths: string[];
+  excluded_paths: string[];
+  eligible: boolean;
+  reason: string | null;
+  active_run: PrDeliveryRun | null;
+}
+
 export interface ListResponse<T> {
   items: T[];
 }
 
 export type TaskStreamEvent =
   | { type: "message"; message: Message }
-  | { type: "status"; status: TaskStatus }
+  | { type: "status"; status: TaskStatus; attention_reason?: Task["attention_reason"] }
   | { type: "run_attempt"; attempt: RunAttempt }
   | { type: "activity"; event: TaskEvent }
   | { type: "invocation"; invocation: TaskInvocation }
   | { type: "token_usage"; used: number; limit: number }
-  | { type: "tool_approval"; approval: ToolApproval };
+  | { type: "tool_approval"; approval: ToolApproval }
+  | { type: "pr_suggestion"; eligible_file_count: number }
+  | { type: "pr_delivery"; run: PrDeliveryRun };
 
 /** Emitted on the global `/ws/events` feed whenever any task's status changes. */
 export interface TaskStatusEvent {
@@ -337,4 +421,5 @@ export interface TaskStatusEvent {
   task_title: string;
   project_name: string | null;
   status: TaskStatus;
+  attention_reason?: Task["attention_reason"];
 }

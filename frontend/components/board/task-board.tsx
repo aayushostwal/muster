@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertCircle,
   ArrowDownUp,
@@ -21,19 +21,21 @@ import {
   Search,
   Sparkles,
   StopCircle,
+  Tags,
   Timer,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { CreateTaskModal } from "@/components/board/create-task-modal";
+import { TagManager } from "@/components/board/tag-manager";
 import { ProjectHeader } from "@/components/project/project-header";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/states";
 import { Tooltip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import { TASK_TAG_COLORS, TASK_TAG_OPTIONS } from "@/lib/task-tags";
+import { TASK_TAG_COLORS } from "@/lib/task-tags";
 import type { AgentBackend, Task, TaskStatus } from "@/lib/types";
 import { backendLabel, cn, formatRelativeTime, shortId } from "@/lib/utils";
 
@@ -70,6 +72,7 @@ const scopeOptions: Array<{ value: BoardScope; label: string; statuses: TaskStat
 
 export function TaskBoard({ projectId }: { projectId: string }) {
   const [createOpen, setCreateOpen] = useState(false);
+  const [tagsOpen, setTagsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [backend, setBackend] = useState<AgentBackend | "all">("all");
   const [tag, setTag] = useState("all");
@@ -80,6 +83,7 @@ export function TaskBoard({ projectId }: { projectId: string }) {
   const [showEmpty, setShowEmpty] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const tasks = useQuery({ queryKey: ["tasks", projectId], queryFn: () => api.tasks(projectId), refetchInterval: 5_000 });
+  const tagCatalog = useQuery({ queryKey: ["project-task-tags", projectId], queryFn: () => api.projectTaskTags(projectId) });
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -108,16 +112,26 @@ export function TaskBoard({ projectId }: { projectId: string }) {
   const allTasks = useMemo(() => tasks.data?.items ?? [], [tasks.data?.items]);
   const metrics = useMemo(() => getMetrics(allTasks), [allTasks]);
   const tagOptions = useMemo(() => {
-    const values = new Set([...TASK_TAG_OPTIONS.map((item) => item.value), ...allTasks.flatMap((task) => task.tags)]);
-    return [{ value: "all", label: "All tags" }, ...[...values].map((value) => ({ value, label: value }))];
-  }, [allTasks]);
+    const counts = new Map<string, { name: string; count: number }>();
+    for (const task of allTasks) for (const value of task.tags) {
+      const key = value.toLowerCase();
+      const current = counts.get(key);
+      counts.set(key, { name: current?.name ?? value, count: (current?.count ?? 0) + 1 });
+    }
+    const used = [...counts.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return [
+      { value: "all", label: "All tags" },
+      { value: "__attention__", label: `Needs Attention (${metrics.attention})` },
+      ...used.map((item) => ({ value: item.name, label: `${item.name} (${item.count})` })),
+    ];
+  }, [allTasks, metrics.attention]);
   const visibleTasks = useMemo(() => {
     const value = query.trim().toLowerCase();
     const statuses = scopeOptions.find((item) => item.value === scope)?.statuses ?? stageOrder;
     return sortTasks(allTasks.filter((task) =>
       statuses.includes(task.status) &&
       (backend === "all" || task.backend === backend) &&
-      (tag === "all" || task.tags.includes(tag)) &&
+      (tag === "all" || (tag === "__attention__" ? task.status === "waiting_on_you" || task.status === "failed" : task.tags.some((value) => value.toLowerCase() === tag.toLowerCase()))) &&
       (!value || task.title.toLowerCase().includes(value) || task.initial_prompt.toLowerCase().includes(value) || task.model?.toLowerCase().includes(value) || task.id.toLowerCase().includes(value) || task.tags.some((item) => item.toLowerCase().includes(value)))), sort);
   }, [allTasks, backend, query, scope, sort, tag]);
   const visibleStages = stageOrder.filter((status) => {
@@ -167,7 +181,8 @@ export function TaskBoard({ projectId }: { projectId: string }) {
           </div>
           <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
             <Select className="h-9 min-h-9 w-32 shrink-0 rounded-lg py-0 text-xs" label="Filter backend" value={backend} onChange={(value) => setBackend(value as AgentBackend | "all")} options={[{ value: "all", label: "All runtimes" }, { value: "claude_code", label: "Claude Code" }, { value: "codex", label: "Codex" }]} />
-            <Select className="h-9 min-h-9 w-32 shrink-0 rounded-lg py-0 text-xs" label="Filter tag" value={tag} onChange={setTag} options={tagOptions} />
+            <Select className="h-9 min-h-9 w-40 shrink-0 rounded-lg py-0 text-xs" label="Filter tag" value={tag} onChange={setTag} options={tagOptions} />
+            <Tooltip label="Create or rename project tags" side="bottom"><button type="button" onClick={() => setTagsOpen(true)} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-white/[0.07] bg-black/15 text-slate-600 transition hover:border-white/15 hover:text-white" aria-label="Manage project tags"><Tags className="h-3.5 w-3.5" /></button></Tooltip>
             <div className="relative shrink-0"><ArrowDownUp className="pointer-events-none absolute left-2.5 top-2.5 z-10 h-3.5 w-3.5 text-slate-600" /><Select className="h-9 min-h-9 w-36 rounded-lg py-0 pl-8 text-xs" label="Sort tasks" value={sort} onChange={(value) => setSort(value as BoardSort)} options={[{ value: "updated", label: "Recently active" }, { value: "created", label: "Newest first" }, { value: "oldest", label: "Oldest first" }, { value: "title", label: "Task title" }]} /></div>
             <div className="flex shrink-0 rounded-lg border border-white/[0.07] bg-black/15 p-0.5">
               <IconToggle active={view === "gallery"} label="Grouped gallery" onClick={() => setView("gallery")}><Columns3 className="h-3.5 w-3.5" /></IconToggle>
@@ -181,7 +196,7 @@ export function TaskBoard({ projectId }: { projectId: string }) {
         <div className="mt-2 flex items-center gap-1 overflow-x-auto sm:hidden">{scopeOptions.map((item) => <button key={item.value} type="button" onClick={() => setScope(item.value)} className={cn("shrink-0 rounded-lg px-2.5 py-1.5 text-[0.62rem]", scope === item.value ? "bg-white/[0.09] text-white" : "text-slate-600")}>{item.label}</button>)}</div>
       </section>
 
-      <div className="mt-3 flex items-center justify-between px-1 text-[0.62rem] text-slate-600"><p><span className="font-mono text-slate-400">{visibleTasks.length}</span> of {allTasks.length} tasks visible</p><p className="hidden items-center gap-1.5 sm:flex"><RefreshCw className={cn("h-3 w-3", tasks.isFetching && "animate-spin text-signal-400")} /> Refreshes every 5 seconds</p></div>
+      <div className="mt-3 flex items-center justify-between px-1 text-[0.62rem] text-slate-600"><p><span className="font-mono text-slate-400">{visibleTasks.length}</span> of {allTasks.length} tasks visible{tagCatalog.isSuccess && !allTasks.some((task) => task.tags.length) ? <button type="button" onClick={() => setTagsOpen(true)} className="ml-2 text-signal-400 hover:text-signal-300">No labels assigned — manage tags</button> : null}</p><p className="hidden items-center gap-1.5 sm:flex"><RefreshCw className={cn("h-3 w-3", tasks.isFetching && "animate-spin text-signal-400")} /> Refreshes every 5 seconds</p></div>
       {tasks.isPending && <BoardSkeleton />}
       {tasks.isError && <div className="mt-4"><ErrorState message={tasks.error.message} retry={() => tasks.refetch()} /></div>}
       {tasks.isSuccess && allTasks.length === 0 && <div className="mt-4"><EmptyState title="Your first run starts here" description="Launch a task and Muster will stream its execution, decisions, and result into this command center." action={<Button variant="primary" onClick={() => setCreateOpen(true)}><Sparkles className="h-4 w-4" /> Launch first task</Button>} /></div>}
@@ -189,6 +204,7 @@ export function TaskBoard({ projectId }: { projectId: string }) {
       {tasks.isSuccess && visibleTasks.length > 0 && view === "gallery" && <motion.div layout className="mt-3 space-y-2.5"><AnimatePresence initial={false} mode="popLayout">{visibleStages.map((status) => <TaskLane key={status} status={status} tasks={visibleTasks.filter((task) => task.status === status)} density={density} />)}</AnimatePresence></motion.div>}
       {tasks.isSuccess && visibleTasks.length > 0 && view === "list" && <TaskList tasks={visibleTasks} />}
       <CreateTaskModal projectId={projectId} open={createOpen} onClose={() => setCreateOpen(false)} />
+      <TagManager projectId={projectId} open={tagsOpen} onClose={() => setTagsOpen(false)} />
     </div>
   );
 }
@@ -207,18 +223,49 @@ function AttentionRail({ tasks, onShowAll }: { tasks: Task[]; onShowAll: () => v
 }
 
 function TaskLane({ status, tasks, density }: { status: TaskStatus; tasks: Task[]; density: BoardDensity }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(status !== "done" && status !== "cancelled");
+  const [visibleCount, setVisibleCount] = useState(24);
   const config = statusConfig[status];
   const Icon = config.icon;
-  return <motion.section layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className={cn("overflow-hidden rounded-2xl border bg-gradient-to-r to-transparent", config.border, config.surface)} aria-labelledby={`lane-${status}`}><button type="button" onClick={() => setOpen((current) => !current)} className="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-white/[0.018]" aria-expanded={open}><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-current/10 bg-black/20", config.tone)}><Icon className={cn("h-3.5 w-3.5", status === "running" && "animate-spin")} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span id={`lane-${status}`} className="text-xs font-semibold text-slate-100">{config.label}</span><span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[0.56rem] tabular-nums text-slate-500">{tasks.length}</span></span><span className="mt-0.5 hidden text-[0.6rem] text-slate-600 sm:block">{config.description}</span></span>{status === "running" && tasks.length > 0 && <span className="mr-2 hidden items-center gap-1.5 text-[0.58rem] text-signal-400/70 sm:flex"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-signal-400" /> live execution</span>}<ChevronDown className={cn("h-4 w-4 text-slate-600 transition-transform", !open && "-rotate-90")} /></button><AnimatePresence initial={false}>{open && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: "spring", stiffness: 420, damping: 38 }} className="overflow-hidden"><div className={cn("grid border-t border-white/[0.055] p-2.5", density === "compact" ? "grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-2" : "grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-2.5")}><AnimatePresence mode="popLayout">{tasks.map((task) => <TaskCard key={task.id} task={task} density={density} />)}</AnimatePresence>{tasks.length === 0 && <div className="col-span-full flex items-center gap-2 rounded-xl border border-dashed border-white/[0.06] px-3 py-4 text-[0.64rem] text-slate-700"><CircleDot className="h-3.5 w-3.5" /> Nothing in this stage</div>}</div></motion.div>}</AnimatePresence></motion.section>;
+  const visible = tasks.slice(0, visibleCount);
+  return <motion.section layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className={cn("overflow-hidden rounded-2xl border bg-gradient-to-r to-transparent", config.border, config.surface)} aria-labelledby={`lane-${status}`}><button type="button" onClick={() => setOpen((current) => !current)} className="flex w-full items-center gap-3 px-3.5 py-3 text-left transition hover:bg-white/[0.018] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-400/40" aria-expanded={open}><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-current/10 bg-black/20", config.tone)}><Icon className={cn("h-3.5 w-3.5", status === "running" && "animate-spin motion-reduce:animate-none")} /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span id={`lane-${status}`} className="text-xs font-semibold text-slate-100">{config.label}</span><span className="rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[0.56rem] tabular-nums text-slate-500">{tasks.length}</span></span><span className="mt-0.5 hidden text-[0.6rem] text-slate-600 sm:block">{config.description}</span></span>{status === "running" && tasks.length > 0 && <span className="mr-2 hidden items-center gap-1.5 text-[0.58rem] text-signal-400/70 sm:flex"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-signal-400 motion-reduce:animate-none" /> live execution</span>}<ChevronDown className={cn("h-4 w-4 text-slate-600 transition-transform", !open && "-rotate-90")} /></button><AnimatePresence initial={false}>{open && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ type: "spring", stiffness: 420, damping: 38 }} className="overflow-hidden"><div className={cn("grid border-t border-white/[0.055] p-2.5", density === "compact" ? "grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-2" : "grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-2.5")}><AnimatePresence mode="popLayout">{visible.map((task) => <TaskCard key={task.id} task={task} density={density} />)}</AnimatePresence>{tasks.length === 0 && <div className="col-span-full flex items-center gap-2 rounded-xl border border-dashed border-white/[0.06] px-3 py-4 text-[0.64rem] text-slate-700"><CircleDot className="h-3.5 w-3.5" /> Nothing in this stage</div>}{visibleCount < tasks.length && <button type="button" onClick={() => setVisibleCount((count) => count + 24)} className="col-span-full rounded-xl border border-dashed border-white/[0.08] px-3 py-3 text-xs text-slate-500 transition hover:border-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-400/40">Show {Math.min(24, tasks.length - visibleCount)} more</button>}</div></motion.div>}</AnimatePresence></motion.section>;
 }
 
 function TaskCard({ task, density }: { task: Task; density: BoardDensity }) {
+  if (task.status === "done" || task.status === "cancelled") {
+    return <OutcomeTaskCard task={task} />;
+  }
+  return <ActiveTaskCard task={task} density={density} />;
+}
+
+function OutcomeTaskCard({ task }: { task: Task }) {
   const config = statusConfig[task.status];
   const duration = task.started_at ? formatDuration(task.started_at, task.completed_at) : null;
-  const tags = [...(task.status === "waiting_on_you" || task.status === "failed" ? ["Need Attention"] : []), ...task.tags];
-  const visibleTags = tags.slice(0, density === "compact" ? 2 : 4);
-  return <motion.article layout initial={{ opacity: 0, scale: 0.975 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.97 }} whileHover={{ y: -2 }} className={cn("group relative min-w-0 overflow-hidden rounded-xl border bg-ink-850/80 shadow-sm transition-colors hover:border-white/[0.16] hover:bg-ink-800/85 hover:shadow-panel", config.border)}>{task.status === "running" && <motion.span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-signal-400 to-transparent" animate={{ x: ["-65%", "65%"] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }} />}<Link href={`/tasks/${task.id}`} className={cn("block focus:outline-none", density === "compact" ? "p-3" : "p-4")}><div className="flex items-center gap-2"><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", config.dot, task.status === "running" && "animate-pulse")} /><span className={cn("text-[0.56rem] font-semibold uppercase tracking-[0.12em]", config.tone)}>{config.shortLabel}</span><span className="ml-auto font-mono text-[0.53rem] text-slate-700">#{shortId(task.id)}</span><ArrowUpRight className="h-3.5 w-3.5 text-slate-700 transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-signal-400" /></div><h4 className={cn("mt-2.5 font-medium leading-5 text-slate-100 transition group-hover:text-white", density === "compact" ? "line-clamp-1 text-[0.78rem]" : "line-clamp-2 text-sm")}>{task.title}</h4><p className={cn("mt-1.5 leading-4 text-slate-600", density === "compact" ? "line-clamp-1 text-[0.62rem]" : "line-clamp-2 text-[0.68rem]")}>{task.initial_prompt}</p>{visibleTags.length > 0 && <div className="mt-2.5 flex flex-wrap gap-1">{visibleTags.map((item) => <TaskTag key={item} value={item} />)}{tags.length > visibleTags.length && <span className="rounded-md border border-white/[0.06] px-1.5 py-0.5 text-[0.52rem] text-slate-600">+{tags.length - visibleTags.length}</span>}</div>}<div className={cn("flex flex-wrap items-center gap-1.5", visibleTags.length ? "mt-2" : "mt-3")}><TaskChip>{backendLabel(task.backend)}</TaskChip><TaskChip>{task.model || "Default model"}</TaskChip>{density === "comfortable" && <TaskChip>{task.thinking_level} thinking</TaskChip>}{task.cron_job_id && <TaskChip>Scheduled</TaskChip>}</div><div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.05] pt-2.5"><span className="flex min-w-0 items-center gap-1.5 truncate text-[0.57rem] text-slate-600"><Clock3 className="h-3 w-3 shrink-0" /> Active {formatRelativeTime(task.updated_at)}</span>{duration && <span className="flex shrink-0 items-center gap-1 font-mono text-[0.55rem] tabular-nums text-slate-700"><Timer className="h-3 w-3" />{duration}</span>}</div></Link></motion.article>;
+  return <motion.article layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className={cn("group min-w-0 rounded-xl border bg-ink-850/55 transition-colors hover:border-white/[0.14] hover:bg-ink-800/70", config.border)}><Link href={`/tasks/${task.id}`} className="block rounded-xl p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-400/40"><div className="flex items-center gap-2"><span className={cn("h-1.5 w-1.5 rounded-full", config.dot)} /><span className={cn("text-[0.55rem] font-semibold uppercase tracking-[0.12em]", config.tone)}>{config.shortLabel}</span><span className="ml-auto text-[0.56rem] text-slate-700">{formatRelativeTime(task.completed_at ?? task.updated_at)}</span></div><h4 className="mt-2 line-clamp-1 text-xs font-medium text-slate-200 transition group-hover:text-white">{task.title}</h4><div className="mt-2 flex min-w-0 items-center gap-1.5">{task.tags.slice(0, 2).map((value) => <TaskTag key={value} value={value} />)}{duration && <span className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[0.54rem] text-slate-700"><Timer className="h-3 w-3" />{duration}</span>}</div></Link></motion.article>;
+}
+
+function ActiveTaskCard({ task, density }: { task: Task; density: BoardDensity }) {
+  const reduceMotion = useReducedMotion();
+  const config = statusConfig[task.status];
+  const duration = task.started_at ? formatDuration(task.started_at, task.completed_at) : null;
+  const needsAttention = task.status === "waiting_on_you" || task.status === "failed";
+  const tags = [...(needsAttention ? ["Need Attention"] : []), ...task.tags];
+  const visibleTags = tags.slice(0, density === "compact" ? 3 : 5);
+  const action = task.status === "waiting_on_you"
+    ? task.attention_reason === "awaiting_review" ? "Review & complete" : "Respond now"
+    : task.status === "failed" ? "Inspect & retry" : task.status === "running" ? "Open live task" : "Review queued task";
+  const currentAction = task.status === "running"
+    ? "Agent is executing the current turn"
+    : task.status === "queued"
+      ? "Waiting for an available runtime"
+      : task.status === "failed"
+        ? "The last run failed and needs review"
+        : task.attention_reason === "tool_permission"
+          ? "A tool permission decision is blocking progress"
+          : task.attention_reason === "blocking_question"
+            ? "The agent is waiting for your answer"
+            : "The turn finished; verify the delivery outcome";
+  return <motion.article layout initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} whileHover={reduceMotion ? undefined : { y: -2 }} className={cn("group relative min-w-0 overflow-hidden rounded-xl border bg-ink-850/85 shadow-sm transition-colors hover:border-white/[0.16] hover:bg-ink-800/90 hover:shadow-panel", config.border)}>{task.status === "running" && <motion.span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-signal-400 to-transparent" animate={reduceMotion ? undefined : { x: ["-65%", "65%"] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }} />}<Link href={`/tasks/${task.id}`} className={cn("block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-400/40", density === "compact" ? "p-3" : "p-4")}><div className="flex items-center gap-2"><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", config.dot, task.status === "running" && "animate-pulse motion-reduce:animate-none")} /><span className={cn("text-[0.56rem] font-semibold uppercase tracking-[0.12em]", config.tone)}>{config.shortLabel}</span><span className="ml-auto font-mono text-[0.53rem] text-slate-700">#{shortId(task.id)}</span></div><h4 className="mt-2.5 line-clamp-2 text-sm font-medium leading-5 text-slate-100 transition group-hover:text-white">{task.title}</h4><p className="mt-2 line-clamp-2 min-h-8 text-[0.65rem] leading-4 text-slate-500">{currentAction}</p><div className="mt-2.5 flex flex-wrap gap-1">{visibleTags.map((item) => <TaskTag key={item} value={item} />)}{tags.length > visibleTags.length && <span className="rounded-md border border-white/[0.06] px-1.5 py-0.5 text-[0.52rem] text-slate-600">+{tags.length - visibleTags.length}</span>}</div><div className="mt-2 flex flex-wrap items-center gap-1.5"><TaskChip>{backendLabel(task.backend)}</TaskChip><TaskChip>{task.model || "Default model"}</TaskChip>{task.cron_job_id && <TaskChip>Scheduled</TaskChip>}</div><div className="mt-3 flex items-center justify-between gap-2 border-t border-white/[0.06] pt-2.5"><span className="flex min-w-0 items-center gap-1.5 truncate text-[0.57rem] text-slate-600"><Clock3 className="h-3 w-3 shrink-0" /> Active {formatRelativeTime(task.updated_at)}{duration ? ` · ${duration}` : ""}</span><span className={cn("inline-flex shrink-0 items-center gap-1 text-[0.62rem] font-medium", needsAttention ? "text-amber-300" : "text-signal-300")}>{action}<ArrowUpRight className="h-3 w-3" /></span></div></Link></motion.article>;
 }
 
 function TaskTag({ value }: { value: string }) {
@@ -231,7 +278,9 @@ function TaskChip({ children }: { children: ReactNode }) {
 }
 
 function TaskList({ tasks }: { tasks: Task[] }) {
-  return <section className="surface mt-3 overflow-hidden rounded-2xl"><div className="grid grid-cols-[minmax(0,1fr)_9rem_9rem_10rem_6rem] gap-3 border-b border-white/[0.07] bg-black/15 px-4 py-2.5 text-[0.55rem] font-semibold uppercase tracking-[0.13em] text-slate-600 max-lg:grid-cols-[minmax(0,1fr)_8rem_6rem] max-sm:grid-cols-[minmax(0,1fr)_6.5rem]"><span>Task</span><span>Status</span><span className="max-sm:hidden">Runtime</span><span className="max-lg:hidden">Timing</span><span className="text-right max-lg:hidden">ID</span></div><motion.div layout><AnimatePresence mode="popLayout">{tasks.map((task) => { const config = statusConfig[task.status]; const Icon = config.icon; const tags = [...(task.status === "waiting_on_you" || task.status === "failed" ? ["Need Attention"] : []), ...task.tags]; return <motion.div key={task.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="group grid grid-cols-[minmax(0,1fr)_9rem_9rem_10rem_6rem] items-center gap-3 border-b border-white/[0.05] px-4 py-2.5 transition last:border-0 hover:bg-white/[0.025] max-lg:grid-cols-[minmax(0,1fr)_8rem_6rem] max-sm:grid-cols-[minmax(0,1fr)_6.5rem]"><Link href={`/tasks/${task.id}`} className="flex min-w-0 items-center gap-3 rounded-lg focus:outline-none"><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.06] bg-white/[0.025]", config.tone)}><Icon className={cn("h-3.5 w-3.5", task.status === "running" && "animate-spin")} /></span><span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-200 transition group-hover:text-white">{task.title}</span><span className="hidden shrink-0 gap-1 xl:flex">{tags.slice(0, 2).map((item) => <TaskTag key={item} value={item} />)}</span></span><span className="mt-0.5 block truncate text-[0.58rem] text-slate-700">{task.initial_prompt}</span></span></Link><span className={cn("flex items-center gap-1.5 text-[0.62rem]", config.tone)}><span className={cn("h-1.5 w-1.5 rounded-full", config.dot)} />{config.shortLabel}</span><span className="min-w-0 max-sm:hidden"><span className="block truncate text-[0.62rem] text-slate-400">{backendLabel(task.backend)}</span><span className="mt-0.5 block truncate text-[0.55rem] text-slate-700">{task.model || "Default model"}</span></span><span className="max-lg:hidden"><span className="block text-[0.6rem] text-slate-500">{formatRelativeTime(task.updated_at)}</span><span className="mt-0.5 block font-mono text-[0.54rem] text-slate-700">{task.started_at ? formatDuration(task.started_at, task.completed_at) : "Not started"}</span></span><Link href={`/tasks/${task.id}`} className="flex items-center justify-end gap-1 font-mono text-[0.55rem] text-slate-700 transition hover:text-signal-400 max-lg:hidden">{shortId(task.id)}<ArrowUpRight className="h-3 w-3" /></Link></motion.div>; })}</AnimatePresence></motion.div></section>;
+  const [visibleCount, setVisibleCount] = useState(100);
+  const visible = tasks.slice(0, visibleCount);
+  return <section className="surface mt-3 overflow-hidden rounded-2xl"><div className="grid grid-cols-[minmax(0,1fr)_9rem_9rem_10rem_6rem] gap-3 border-b border-white/[0.07] bg-black/15 px-4 py-2.5 text-[0.55rem] font-semibold uppercase tracking-[0.13em] text-slate-600 max-lg:grid-cols-[minmax(0,1fr)_8rem_6rem] max-sm:grid-cols-[minmax(0,1fr)_6.5rem]"><span>Task</span><span>Status</span><span className="max-sm:hidden">Runtime</span><span className="max-lg:hidden">Timing</span><span className="text-right max-lg:hidden">ID</span></div><motion.div layout><AnimatePresence mode="popLayout">{visible.map((task) => { const config = statusConfig[task.status]; const Icon = config.icon; const tags = [...(task.status === "waiting_on_you" || task.status === "failed" ? ["Need Attention"] : []), ...task.tags]; return <motion.div key={task.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="group grid grid-cols-[minmax(0,1fr)_9rem_9rem_10rem_6rem] items-center gap-3 border-b border-white/[0.05] px-4 py-2.5 transition last:border-0 hover:bg-white/[0.025] max-lg:grid-cols-[minmax(0,1fr)_8rem_6rem] max-sm:grid-cols-[minmax(0,1fr)_6.5rem]"><Link href={`/tasks/${task.id}`} className="flex min-w-0 items-center gap-3 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-400/40"><span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.06] bg-white/[0.025]", config.tone)}><Icon className={cn("h-3.5 w-3.5", task.status === "running" && "animate-spin motion-reduce:animate-none")} /></span><span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-200 transition group-hover:text-white">{task.title}</span><span className="hidden shrink-0 gap-1 xl:flex">{tags.slice(0, 2).map((item) => <TaskTag key={item} value={item} />)}</span></span><span className="mt-0.5 block truncate text-[0.58rem] text-slate-700">{task.status === "done" ? "Completed conversation" : task.initial_prompt}</span></span></Link><span className={cn("flex items-center gap-1.5 text-[0.62rem]", config.tone)}><span className={cn("h-1.5 w-1.5 rounded-full", config.dot)} />{config.shortLabel}</span><span className="min-w-0 max-sm:hidden"><span className="block truncate text-[0.62rem] text-slate-400">{backendLabel(task.backend)}</span><span className="mt-0.5 block truncate text-[0.55rem] text-slate-700">{task.model || "Default model"}</span></span><span className="max-lg:hidden"><span className="block text-[0.6rem] text-slate-500">{formatRelativeTime(task.updated_at)}</span><span className="mt-0.5 block font-mono text-[0.54rem] text-slate-700">{task.started_at ? formatDuration(task.started_at, task.completed_at) : "Not started"}</span></span><Link href={`/tasks/${task.id}`} className="flex items-center justify-end gap-1 font-mono text-[0.55rem] text-slate-700 transition hover:text-signal-400 max-lg:hidden">{shortId(task.id)}<ArrowUpRight className="h-3 w-3" /></Link></motion.div>; })}</AnimatePresence></motion.div>{visibleCount < tasks.length && <button type="button" onClick={() => setVisibleCount((count) => count + 100)} className="w-full border-t border-white/[0.06] px-4 py-3 text-xs text-slate-500 transition hover:bg-white/[0.025] hover:text-white">Show more tasks</button>}</section>;
 }
 
 function BoardSkeleton() {

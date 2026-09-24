@@ -20,14 +20,23 @@ docker-compose.yml   Postgres + frontend only (backend runs natively)
 Implemented in `backend/app/db/models.py`:
 `Project, DirectoryResource, DirectoryBinding, GlobalMcpServer, AgentProfile,
 Skill, ProjectCapabilityOverride, Task, TaskInvocation, TaskEvent,
-ToolApprovalRequest, Message, ContextSnapshot, CronJob, TaskRunAttempt, Secret`
+ToolApprovalRequest, PrDeliveryRun, Message, ContextSnapshot, CronJob,
+TaskRunAttempt, Secret`
 plus legacy project-scoped
 binding types retained for API compatibility.
 
 Enums: `AgentBackend(claude_code, codex)`,
 `TaskStatus(queued, running, waiting_on_you, done, failed, cancelled)`,
 `MessageSender(user, agent, system)`, `AccessScope(read, read_write)`,
-`FailureClass(transient, other)`.
+`FailureClass(transient, other)`,
+`PrPolicy(manual, preferred, required)` (Project-level PR delivery default),
+`PrDeliveryStatus(awaiting_confirmation, validating, pushing, creating_pr,
+succeeded, failed, rejected)`.
+
+`Task` also carries `git_baseline_dirty_paths: list[str]` and
+`git_baseline_captured_at: datetime | None` — a one-time snapshot of paths
+already dirty before the task's first invocation, used to scope a PR to
+*this task's* changes only (see "PR delivery" below).
 
 ## REST API (prefix `/api`)
 
@@ -139,6 +148,43 @@ GET    /api/tasks/{id}/events              -> structured tools, diffs, reasoning
 GET    /api/tasks/{id}/tool-approvals      -> all pending/resolved runtime permission requests
 POST   /api/tasks/{id}/tool-approvals/{approval_id}/resolve
                                             {decision: approve_once|always_allow|deny}
+
+GET    /api/tasks/{id}/pr-delivery/eligibility  -> live, side-effect-free snapshot of
+                                            whether/why a PR can be raised right now
+                                            (git repo?, remote?, detached HEAD?, files
+                                            eligible vs. excluded, the task's current
+                                            PrPolicy, and the active run if any)
+GET    /api/tasks/{id}/pr-delivery         -> full history of PrDeliveryRun for this task
+POST   /api/tasks/{id}/pr-delivery/prepare {base_branch?, remote_name?, draft?}
+                                            -> computes eligibility and persists an
+                                               `awaiting_confirmation` PrDeliveryRun;
+                                               201. NEVER mutates the repository or calls
+                                               a provider. Idempotent: re-preparing while
+                                               a run is `awaiting_confirmation` refreshes
+                                               that same run instead of creating another;
+                                               422 while a run is mid-flight
+                                               (validating/pushing/creating_pr) for this task.
+POST   /api/tasks/{id}/pr-delivery/{run_id}/confirm
+                                            {commit_message?, pr_title?, pr_body?, draft?}
+                                            -> the ONLY endpoint that mutates the
+                                               repository or calls a provider: runs the
+                                               project's validation command (if
+                                               configured), creates/checks out the
+                                               feature branch, commits the exact file set
+                                               shown at prepare() time, pushes, and
+                                               creates (or links an existing) PR. A
+                                               no-op returning the run unchanged if it is
+                                               already terminal (double-click / retry-safe).
+POST   /api/tasks/{id}/pr-delivery/{run_id}/cancel
+                                            -> user declined the confirmation card;
+                                               PrDeliveryStatus.rejected
+POST   /api/tasks/{id}/pr-delivery/{run_id}/sync
+                                            -> re-polls the provider for the PR's current
+                                               state/review decision; the only path that
+                                               may add the "PR Reviewed" tag
+POST   /api/tasks/{id}/pr-delivery/complete-without-pr
+                                            {reason}   -> explicit "PR required" override;
+                                               see "PR delivery" below
 ```
 
 Capability discovery covers direct user resources plus active marketplace
@@ -161,7 +207,12 @@ Server -> client JSON events, one per line:
 {"type": "invocation", "invocation": {...TaskInvocation...}}
 {"type": "token_usage", "used": 12000, "limit": 200000}
 {"type": "tool_approval", "approval": {...ToolApprovalRequest...}}
+{"type": "pr_delivery", "run": {...PrDeliveryRun...}}
+{"type": "pr_suggestion", "eligible_file_count": 3}
 ```
+`pr_suggestion` is a pure hint (no DB row backs it) broadcast once after a
+turn concludes with eligible changes and `PrPolicy != manual` — see "PR
+delivery" below. It is never itself a PrDeliveryRun.
 Client -> server: not used for sending chat (that's the REST POST, so it's
 durable even if the socket drops); reserved for future typing indicators.
 
@@ -185,7 +236,10 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
      invocation record;
    - detects a blocking question (see below) and flips status to
      `waiting_on_you`;
-   - on clean exit, flips status to `done`;
+   - on clean exit, flips status to `waiting_on_you` with
+     `attention_reason="awaiting_review"`; a successful process/turn only
+     proves that the runtime exited cleanly, not that the requested outcome
+     was delivered;
    - on nonzero exit, classifies the failure (see Failure Handling) and
      either schedules a retry or flips to `failed` and waits.
 
@@ -202,6 +256,21 @@ agent, and model chain, then starts the destination runtime in a fresh native
 session. The first prompt contains the original brief and a bounded handoff of
 the persisted conversation. Existing messages and invocation records remain
 available for audit and are rendered with their original runtime labels.
+
+### Task completion and resumption
+
+`done` is an explicit conversation state, not a subprocess outcome. The user
+sets it through `POST /api/tasks/{id}/complete` (the **Mark conversation
+complete** action). `ProcessManager` serializes complete/cancel/restart/exit
+transitions with a per-task lock; the first terminal action wins and repeated
+clicks are idempotent. Posting another message to a completed, cancelled,
+failed, or waiting task clears its terminal timestamps/attention reason and
+resumes the native Claude/Codex session.
+
+Automatic completion is deliberately an extension point. It may be added only
+for a trusted structured delivery event, such as a provider-confirmed PR or a
+durably stored Canvas delivery record with explicit task provenance. A zero
+exit code, a `Done` stream event, or assistant prose is never sufficient.
 
 ### Agent backends (`backend/app/services/agent_backends/`)
 
@@ -273,6 +342,127 @@ snapshot's summary instead of full history once one exists. The raw
 transcript file is never deleted — the UI's "expand full transcript" reads
 it directly.
 
+## PR delivery (`backend/app/services/pr_delivery.py`)
+
+Safe, structured "raise a PR for this task's changes" workflow. Default
+behavior is **PR preferred, not fully automatic**: a PR is only ever created
+from an explicit user action (the "Prepare PR" quick action beside the task
+composer, or the reserved `/pr` command — both resolve to the same
+`prepare()` -> `confirm()` calls), never merely because an agent turn ended.
+
+**State machine** (`PrDeliveryStatus`, persisted per-run in `pr_delivery_runs`):
+
+```
+awaiting_confirmation -> validating -> pushing -> creating_pr -> succeeded
+                       \-> rejected                            \-> failed
+```
+
+- `prepare()` computes eligibility and creates/refreshes an
+  `awaiting_confirmation` run. Never mutates the repository or calls a
+  provider. Idempotent against rapid repeated clicks (reuses the task's
+  existing `awaiting_confirmation` run rather than creating a duplicate; a
+  second `prepare()` while a run is mid-flight returns 422).
+- `confirm()` is the only function that mutates anything: runs the
+  project's `pr_validation_command` (if configured), checks out/creates the
+  feature branch, commits exactly the file set shown at `prepare()` time,
+  pushes, and creates (or, if one already exists for the same
+  repository/head branch, links) the PR. If `run` is already terminal
+  (succeeded/failed/rejected) it is a no-op that returns the run unchanged —
+  this is what makes a double-click, or a retry after a backend restart,
+  safe. A per-task `asyncio.Lock` (mirroring `ProcessManager._lock_for`)
+  serializes concurrent `confirm()` calls for the same task.
+
+**Scoping to *this task's* changes** (never silently sweeping in unrelated
+edits): `process_manager._spawn()` captures a one-time baseline of dirty
+paths (`git status --porcelain`) the moment a task's first invocation
+starts, stored on `Task.git_baseline_dirty_paths` /
+`git_baseline_captured_at`. Eligibility is always `current dirty paths -
+baseline dirty paths`; the pre-existing/overlapping paths are reported back
+as `excluded_paths` so the confirmation card can show them, never silently
+drop them. A task whose baseline was never captured (never ran, or capture
+failed) is treated as **unknown**, not clean — nothing is eligible until a
+real baseline exists.
+
+**Safety checks**, all re-verified live (never cached) at both `prepare()`
+and `confirm()` time: working root is a git repository; it has the
+configured remote; HEAD is not detached; there is at least one eligible
+file. `confirm()` additionally fails closed if the working tree changed
+between `prepare()` and `confirm()` (the eligible file set no longer matches
+exactly) rather than silently delivering a different diff than what the
+user confirmed. The feature branch (name from `Project.pr_branch_prefix`,
+per-task suffixed so it can never collide with `main`/`master`/`trunk`/etc.)
+is always created/checked out before any push — `confirm()` never pushes to
+whatever branch happened to be checked out.
+
+**Confirmation card** (frontend, `pr-delivery-bar.tsx`) shows exactly what
+`confirm()` is about to do before it runs: files, commit message, remote,
+head branch, base branch, draft state, PR title, and body — editable, then
+Confirm/Cancel. This mirrors the same "explicit user decision before an
+external mutation" pattern as `ToolApprovalRequest` resolution
+(`app/api/routes/tools.py`) without reusing that table directly (git
+push/PR-create is a different domain from an in-turn tool-call approval).
+
+**Provider abstraction** (`Provider` base class, `_PROVIDERS` registry):
+today only `GhCliProvider` (the local `gh` CLI) is implemented, keyed by
+`Project.pr_provider = "github"`. Adding another host means implementing
+`detect_repository` / `find_existing_pr` / `create_pr` / `get_pr_state` and
+registering it — nothing else in `pr_delivery.py` or the API routes is
+GitHub-specific.
+
+**Tags** (`Task.tags` assignments plus the persisted project catalog in
+`project_task_tags`): `pr_delivery.py` is the only
+code that ever adds `"PR Raised"` (on confirmed provider PR creation) or
+`"PR Reviewed"` (only from `sync_status()` polling the provider's
+`reviewDecision`/merge state). Structured Magic Canvas message media is the
+only path that adds `"Canvas"`. These system tags are visible but read-only in
+the tag manager and assignment controls; generic task APIs cannot manufacture
+or remove them. Existing task JSON arrays remain valid and are lazily imported
+into the project catalog, so the migration does not rewrite historical tasks.
+
+**Project policy** (`PrPolicy` on `Project`): `manual` never broadcasts the
+`pr_suggestion` hint; `preferred` (default) broadcasts it once a turn
+concludes (`waiting_on_you`) with eligible changes; `required`
+governs `get_completion_gate()` below. Policy never blocks the explicit
+Prepare PR action/`/pr` — it only controls the passive suggestion.
+
+**Integration with the task-completion lifecycle**: `get_completion_gate(db,
+task, project) -> {"satisfied": bool, "reason": str | None}` is a pure,
+side-effect-free read, wired into `POST /tasks/{id}/complete`
+(`complete_task` in `app/api/routes/tasks.py`) — the explicit
+"mark conversation complete" endpoint added by the task-completion
+lifecycle work (`ProcessManager.complete()` in `process_manager.py`,
+developed concurrently in this same working tree). When
+`project.pr_policy == PrPolicy.required` and no PrDeliveryRun has
+succeeded (or been explicitly overridden), `complete_task` returns 422
+with the gate's reason instead of calling `process_manager.complete()`;
+the user resolves this by raising and confirming a PR, or by calling
+`POST /tasks/{id}/pr-delivery/complete-without-pr` (captures a reason,
+satisfies the gate) first. `pr_delivery.py` and `process_manager.py`
+otherwise stay decoupled — this is the only place their status logic
+meets, and it lives at the route layer, not inside either service.
+
+### Repeated “Raise a PR” instructions: product decision
+
+| Option | Friction | Safety / fit |
+| --- | --- | --- |
+| Composer quick action | Low | Best default: visible at the decision point and opens confirmation without mutating git. |
+| `/pr` slash command | Low for keyboard users | Useful alias for the same action; less discoverable by itself. |
+| Reusable prompt template | Medium | Portable, but still ambiguous prose and cannot prove branch/diff/provider state. |
+| Project completion policy | Low after setup | Appropriate only as `manual` / `preferred` / `required` gating; it must not create a PR automatically. |
+| Automatic post-task workflow | Lowest apparent friction | Rejected as the default: a clean turn is not proof of delivery and automatic commit/push/PR creation has excessive blast radius. |
+
+**Recommendation implemented:** the composer quick action, with `/pr` as a
+keyboard alias, both call the same read-only `prepare()` path. A passive hint
+appears only when the task has a captured baseline and a real eligible git
+diff. Before any mutation the confirmation card rechecks the working tree,
+shows the exact files, branch, remote, validation command, title/body, and
+draft state, and requires explicit confirmation. The confirmed path still
+requires a non-detached repository, configured remote, task-scoped changes,
+a non-protected feature branch, successful optional validation, push access,
+and authenticated provider permission. `required` policy may block explicit
+completion, but its documented override captures a reason; it never silently
+pushes or opens a PR.
+
 ## Integration seams (exact signatures — do not change without updating both sides)
 
 `backend/app/services/process_manager.py` exports a module-level singleton:
@@ -281,6 +471,7 @@ it directly.
 class ProcessManager:
     async def trigger(self, task_id: uuid.UUID) -> None: ...
     async def cancel(self, task_id: uuid.UUID) -> None: ...
+    async def complete(self, task_id: uuid.UUID) -> None: ...
     async def retry_now(self, task_id: uuid.UUID) -> None: ...
     async def restart_from_beginning(self, task_id: uuid.UUID) -> None: ...
     async def switch_backend(self, task_id: uuid.UUID, backend: AgentBackend) -> None: ...
@@ -319,6 +510,29 @@ Each scheduled firing creates a Task (backend=cron_job.backend,
 initial_prompt=cron_job.prompt, cron_job_id=cron_job.id) and calls
 `process_manager.trigger()`, exactly like the manual creation path.
 
+`backend/app/services/pr_delivery.py` exports (see "PR delivery" above):
+
+```python
+async def capture_git_baseline(directory: str | None) -> list[str] | None: ...
+async def eligibility(db, task, project, *, base_branch=None, remote_name=None) -> dict: ...
+async def eligibility_hint(db, task, project) -> dict | None: ...  # side-effect-free
+async def prepare(db, task, project, *, base_branch=None, remote_name=None, draft=None) -> PrDeliveryRun: ...
+async def confirm(db, task, project, run, *, commit_message=None, pr_title=None, pr_body=None, draft=None) -> PrDeliveryRun: ...
+async def cancel(db, run) -> PrDeliveryRun: ...
+async def complete_without_pr(db, task, project, reason: str) -> PrDeliveryRun: ...
+async def sync_status(db, project, run) -> PrDeliveryRun: ...
+async def get_completion_gate(db, task, project) -> dict: ...  # extension point, see above
+class PrDeliveryError(Exception): ...  # routes turn this into HTTP 422
+```
+
+`process_manager._spawn()` calls `capture_git_baseline()` once per task
+(best-effort, never raises into the spawn path) and `_on_process_exit()`
+calls `_broadcast_pr_hint()` (which wraps `eligibility_hint()`) after
+a turn concludes `waiting_on_you` — the only two places
+`process_manager.py` touches PR delivery. Everything else (prepare/confirm/
+cancel/sync/complete-without-pr) is invoked directly from
+`app/api/routes/pr_delivery.py`, not from the process manager.
+
 ## Frontend (`frontend/`, Next.js + TypeScript + Tailwind)
 
 Routes: `/` (cross-project live operations command center), `/projects` (project
@@ -336,6 +550,17 @@ API client: `frontend/lib/api.ts`, one typed function per endpoint above.
 Runtime deployments set `window.__MUSTER_API_URL__`; build-time deployments
 may set `NEXT_PUBLIC_API_URL`. The task stream is managed in
 `frontend/hooks/use-task-stream.ts`.
+
+The task composer (`frontend/components/task/task-console.tsx`) carries a
+"Prepare PR" quick action and the reserved `/pr` command (merged into the
+same `/`-triggered menu as agents/skills in
+`frontend/components/task/slash-command-menu.tsx`, distinguished by
+`SlashCommandItem.kind === "action"`); both call the same
+`PrDeliveryPanel` (`frontend/components/task/pr-delivery-bar.tsx`), which
+renders the passive "Changes ready" suggestion, the pre-mutation
+confirmation card, in-flight progress, and success/failure states inline
+above the terminal. Project-level PR policy/branch/validation settings live
+in the "Pull requests" tab of `frontend/components/project/resource-panels.tsx`.
 
 State: React Query for server state, no global state library needed.
 

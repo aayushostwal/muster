@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Slash, Wand2 } from "lucide-react";
+import { Bot, GitPullRequest, Slash, Wand2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { SlashCommandItem } from "@/hooks/use-slash-commands";
@@ -62,12 +62,12 @@ export function SlashCommandMenu({
               )}
             >
               <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-slate-400">
-                {item.kind === "agent" ? <Bot className="h-3.5 w-3.5" /> : <Wand2 className="h-3.5 w-3.5" />}
+                {item.kind === "agent" ? <Bot className="h-3.5 w-3.5" /> : item.kind === "action" ? <GitPullRequest className="h-3.5 w-3.5" /> : <Wand2 className="h-3.5 w-3.5" />}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs font-medium">/{item.name}</span>
                 <span className="mt-0.5 block truncate text-[0.6rem] text-slate-600">
-                  {item.description || (item.kind === "agent" ? "Agent" : "Skill")}
+                  {item.description || (item.kind === "agent" ? "Agent" : item.kind === "action" ? "Quick action" : "Skill")}
                 </span>
               </span>
             </button>

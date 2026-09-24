@@ -39,6 +39,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
             title="Continue elsewhere",
             initial_prompt="Implement the original feature.",
             status=TaskStatus.done,
+            attention_reason="awaiting_review",
             backend=AgentBackend.claude_code,
             model="claude-sonnet",
             fallback_models=["claude-haiku"],
@@ -103,6 +104,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
     assert switched is not None
     assert switched.backend == AgentBackend.codex
     assert switched.status == TaskStatus.queued
+    assert switched.attention_reason is None
     assert switched.session_id is None
     assert switched.model is None
     assert switched.fallback_models == []

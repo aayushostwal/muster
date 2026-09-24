@@ -10,9 +10,11 @@ from app.api.routes import (
     cron,
     directories,
     mcp_servers,
+    pr_delivery,
     projects,
     registry,
     secrets as secrets_routes,
+    task_tags,
     tasks,
     tools,
     ws,
@@ -52,6 +54,8 @@ app.include_router(artifacts.router, prefix="/api")
 app.include_router(secrets_routes.router, prefix="/api")
 app.include_router(cron.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
+app.include_router(task_tags.router, prefix="/api")
+app.include_router(pr_delivery.router, prefix="/api")
 app.include_router(ws.router)
 
 

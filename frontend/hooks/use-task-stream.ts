@@ -4,12 +4,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { apiBase } from "@/lib/api";
-import type { ListResponse, Message, RunAttempt, Task, TaskEvent, TaskInvocation, TaskStreamEvent, ToolApproval } from "@/lib/types";
+import type { ListResponse, Message, PrDeliveryRun, RunAttempt, Task, TaskEvent, TaskInvocation, TaskStreamEvent, ToolApproval } from "@/lib/types";
 
 export function useTaskStream(taskId: string) {
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<"connecting" | "live" | "offline">("connecting");
   const [tokenUsage, setTokenUsage] = useState<{ used: number; limit: number } | null>(null);
+  const [prSuggestion, setPrSuggestion] = useState<{ eligibleFileCount: number } | null>(null);
   const reconnectAttempt = useRef(0);
 
   useEffect(() => {
@@ -38,7 +39,9 @@ export function useTaskStream(taskId: string) {
             });
           }
           if (event.type === "status") {
-            queryClient.setQueryData<Task>(["task", taskId], (current) => current ? { ...current, status: event.status } : current);
+            queryClient.setQueryData<Task>(["task", taskId], (current) =>
+              current ? { ...current, status: event.status, attention_reason: event.attention_reason ?? null } : current,
+            );
           }
           if (event.type === "run_attempt") {
             queryClient.setQueryData<ListResponse<RunAttempt>>(["attempts", taskId], (current) => ({ items: [...(current?.items ?? []), event.attempt] }));
@@ -65,6 +68,20 @@ export function useTaskStream(taskId: string) {
               return { items: [...items, event.approval] };
             });
           }
+          if (event.type === "pr_suggestion") {
+            setPrSuggestion({ eligibleFileCount: event.eligible_file_count });
+          }
+          if (event.type === "pr_delivery") {
+            queryClient.setQueryData<ListResponse<PrDeliveryRun>>(["pr-delivery-runs", taskId], (current) => {
+              const items = current?.items ?? [];
+              const exists = items.some((item) => item.id === event.run.id);
+              return {
+                items: exists
+                  ? items.map((item) => item.id === event.run.id ? event.run : item)
+                  : [...items, event.run],
+              };
+            });
+          }
         } catch {
           // Ignore malformed frames and retain the live connection.
         }
@@ -87,5 +104,5 @@ export function useTaskStream(taskId: string) {
     };
   }, [queryClient, taskId]);
 
-  return { connection, tokenUsage };
+  return { connection, tokenUsage, prSuggestion };
 }

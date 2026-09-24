@@ -50,7 +50,7 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
             json={
                 "title": "Do the thing",
                 "initial_prompt": "please do the thing",
-                "tags": ["PR Raised", "Canvas", "pr RAISED"],
+                "tags": ["Bug", "Customer beta", "bug"],
             },
         )
         assert resp.status_code == 201
@@ -58,7 +58,7 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
         assert task["status"] == "queued"
         assert task["backend"] == "claude_code"
         assert task["project_id"] == project_id
-        assert task["tags"] == ["PR Raised", "Canvas"]
+        assert task["tags"] == ["Bug", "Customer beta"]
 
         trigger_mock.assert_awaited_once()
         awaited_task_id = trigger_mock.await_args.args[0]
@@ -95,10 +95,17 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
 
         resp = await client.patch(
             f"/api/tasks/{task['id']}/tags",
-            json={"tags": ["PR Reviewed", "Canvas"]},
+            json={"tags": ["Feature", "Customer beta"]},
         )
         assert resp.status_code == 200
-        assert resp.json()["tags"] == ["PR Reviewed", "Canvas"]
+        assert resp.json()["tags"] == ["Feature", "Customer beta"]
+
+        # Evidence-backed labels cannot be assigned through the generic tag API.
+        resp = await client.patch(
+            f"/api/tasks/{task['id']}/tags",
+            json={"tags": ["PR Raised"]},
+        )
+        assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -175,6 +182,9 @@ async def test_posting_a_message_persists_it_and_triggers_process_manager(
         assert message["content_text"] == "here is more context"
         assert message["media"] == [canvas]
         assert message["task_id"] == task_id
+
+        resp = await client.get(f"/api/tasks/{task_id}")
+        assert resp.json()["tags"] == ["Canvas"]
 
         # trigger called again for the follow-up message
         assert trigger_mock.await_count == 2
