@@ -102,6 +102,38 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
 
 
 @pytest.mark.asyncio
+async def test_delete_task_stops_active_run_and_removes_task(
+    override_get_db, monkeypatch
+):
+    from app.services.process_manager import process_manager
+
+    trigger_mock = AsyncMock()
+    cancel_mock = AsyncMock()
+    monkeypatch.setattr(process_manager, "trigger", trigger_mock)
+    monkeypatch.setattr(process_manager, "cancel", cancel_mock)
+
+    app = _build_app(override_get_db)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        project = await client.post(
+            "/api/projects",
+            json={"name": "Demo Project", "default_backend": "claude_code"},
+        )
+        task = await client.post(
+            f"/api/projects/{project.json()['id']}/tasks",
+            json={"title": "Delete me", "initial_prompt": "temporary task"},
+        )
+        task_id = task.json()["id"]
+
+        response = await client.delete(f"/api/tasks/{task_id}")
+        missing = await client.get(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 204
+    cancel_mock.assert_awaited_once_with(uuid.UUID(task_id))
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_posting_a_message_persists_it_and_triggers_process_manager(
     override_get_db, monkeypatch
 ):

@@ -21,10 +21,12 @@ import {
   ShieldAlert,
   Sparkles,
   TerminalSquare,
+  Trash2,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -57,6 +59,7 @@ const statusMeta: Record<TaskStatus, { label: string; color: string }> = {
 };
 
 export function TaskConsole({ taskId }: { taskId: string }) {
+  const router = useRouter();
   const task = useQuery({ queryKey: ["task", taskId], queryFn: () => api.task(taskId), refetchInterval: 10_000 });
   const messages = useQuery({ queryKey: ["messages", taskId], queryFn: () => api.messages(taskId) });
   const attempts = useQuery({ queryKey: ["attempts", taskId], queryFn: () => api.attempts(taskId) });
@@ -70,6 +73,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [restartOpen, setRestartOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
@@ -82,6 +86,18 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       queryClient.invalidateQueries({ queryKey: ["tool-approvals", taskId] });
       if (name === "restart") setRestartOpen(false);
       toast(name === "restart" ? "New session started from the original brief" : "Task state updated", "success");
+    },
+    onError: (error: Error) => toast(error.message, "error"),
+  });
+  const deleteTask = useMutation({
+    mutationFn: () => api.deleteTask(taskId),
+    onSuccess: () => {
+      const projectId = task.data?.project_id;
+      queryClient.removeQueries({ queryKey: ["task", taskId] });
+      if (projectId) queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["tasks", "global"] });
+      toast("Task deleted", "success");
+      router.replace(projectId ? `/projects/${projectId}/board` : "/");
     },
     onError: (error: Error) => toast(error.message, "error"),
   });
@@ -127,6 +143,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
           <Tooltip label="Run details" side="bottom"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Task controls" side="bottom"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Raw transcript" side="bottom" align="end"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
+          <Tooltip label="Delete task" side="bottom" align="end"><Button size="icon" variant="ghost" onClick={() => setDeleteOpen(true)} aria-label="Delete task"><Trash2 className="h-4 w-4" /></Button></Tooltip>
         </div>
         <Button className="shrink-0 sm:hidden" size="icon" variant="ghost" onClick={() => setMobileActionsOpen(true)} aria-label="Open task actions"><MoreHorizontal className="h-4 w-4" /></Button>
       </header>
@@ -145,8 +162,9 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <TaskSettings key={current.backend} task={current} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <TranscriptDrawer taskId={taskId} open={transcriptOpen} onClose={() => setTranscriptOpen(false)} />
       <TaskDetailsDrawer task={current} projectName={project.data?.name} attempts={attempts.data?.items ?? []} invocations={invocations.data?.items ?? []} open={detailsOpen} onClose={() => setDetailsOpen(false)} onOpenTranscript={() => { setDetailsOpen(false); setTranscriptOpen(true); }} />
-      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); if (name === "restart") setRestartOpen(true); else action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} />
+      <TaskMobileActions task={current} open={mobileActionsOpen} busy={action.isPending} onClose={() => setMobileActionsOpen(false)} onAction={(name) => { setMobileActionsOpen(false); if (name === "restart") setRestartOpen(true); else action.mutate(name); }} onOpenDetails={() => { setMobileActionsOpen(false); setDetailsOpen(true); }} onOpenSettings={() => { setMobileActionsOpen(false); setSettingsOpen(true); }} onOpenTranscript={() => { setMobileActionsOpen(false); setTranscriptOpen(true); }} onDelete={() => { setMobileActionsOpen(false); setDeleteOpen(true); }} />
       <RestartTaskModal task={current} open={restartOpen} busy={action.isPending && action.variables === "restart"} onClose={() => setRestartOpen(false)} onConfirm={() => action.mutate("restart")} />
+      <DeleteTaskModal task={current} open={deleteOpen} busy={deleteTask.isPending} onClose={() => setDeleteOpen(false)} onConfirm={() => deleteTask.mutate()} />
     </div>
   );
 }
@@ -316,6 +334,7 @@ function TaskMobileActions({
   onOpenDetails,
   onOpenSettings,
   onOpenTranscript,
+  onDelete,
 }: {
   task: Task;
   open: boolean;
@@ -325,6 +344,7 @@ function TaskMobileActions({
   onOpenDetails: () => void;
   onOpenSettings: () => void;
   onOpenTranscript: () => void;
+  onDelete: () => void;
 }) {
   return (
     <Drawer open={open} onClose={onClose} title="Task actions">
@@ -342,6 +362,7 @@ function TaskMobileActions({
           <Button onClick={onOpenDetails}><History className="h-4 w-4" /> Run details</Button>
           <Button onClick={onOpenSettings}><Settings2 className="h-4 w-4" /> Task controls</Button>
           <Button onClick={onOpenTranscript}><FileText className="h-4 w-4" /> Raw transcript</Button>
+          <Button variant="danger" onClick={onDelete}><Trash2 className="h-4 w-4" /> Delete task</Button>
         </div>
       </div>
     </Drawer>
@@ -382,6 +403,41 @@ function RestartTaskModal({
         <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-5">
           <Button variant="ghost" onClick={onClose} disabled={busy}>Keep current session</Button>
           <Button variant="primary" onClick={onConfirm} loading={busy}><RotateCcw className="h-4 w-4" /> Restart from beginning</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteTaskModal({
+  task,
+  open,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  task: Task;
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const active = task.status === "running" || task.status === "queued" || task.status === "waiting_on_you";
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Delete this task?"
+      description="This permanently removes the task and its messages, activity, and invocation history."
+    >
+      <div className="space-y-5">
+        <div className="rounded-xl border border-red-400/15 bg-red-400/[0.04] p-4">
+          <p className="text-sm font-medium text-white">{task.title}</p>
+          {active && <p className="mt-2 text-xs leading-5 text-red-200/65">The current agent run will be stopped before this task is deleted.</p>}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-5">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Keep task</Button>
+          <Button variant="danger" onClick={onConfirm} loading={busy}><Trash2 className="h-4 w-4" /> Delete task</Button>
         </div>
       </div>
     </Modal>
