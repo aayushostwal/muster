@@ -41,7 +41,9 @@ service internals.
 ### Connect Codex or Claude Code over MCP
 
 The installer also adds `muster-mcp`, a local stdio MCP server. Register it
-once with either client while Muster is running:
+once at user scope with either client while Muster is running. Codex stores
+`mcp add` entries in the user configuration by default; Claude Code requires
+the explicit `--scope user` flag:
 
 ```bash
 codex mcp add muster -- "$(command -v muster-mcp)"

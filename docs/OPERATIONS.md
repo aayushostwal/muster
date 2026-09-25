@@ -112,7 +112,9 @@ See the root [`README.md`](../README.md) quick-start section — run Postgres
 Muster exposes a process-spawned stdio MCP server through the installed
 `muster-mcp` wrapper. The wrapper reads the backend port from
 `~/.muster/muster.env` and communicates only with the loopback REST API, so
-the supervised Muster backend must be running.
+the supervised Muster backend must be running. The Codex command below writes
+its normal user-level MCP configuration; Claude Code uses `--scope user` to
+make the server available across projects.
 
 ```bash
 command -v muster-mcp
