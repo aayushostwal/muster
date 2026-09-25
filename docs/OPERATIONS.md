@@ -64,6 +64,20 @@ curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/in
 | `MUSTER_POSTGRES_PASSWORD` | `muster` | Postgres password. |
 | `MUSTER_POSTGRES_DB` | `muster` | Postgres database. |
 | `MUSTER_PG_WAIT_TIMEOUT` | `90` | Seconds to wait for Postgres readiness. |
+| `MUSTER_INTERACTIVE_TERMINAL_ENABLED` | `false` | Enable local Codex/Claude PTY sessions. |
+| `MUSTER_DEFAULT_TASK_RUNTIME_MODE` | `structured` | Default for new manual tasks; use `interactive` only when terminals are enabled. |
+
+To enable the embedded terminal for newly created manual tasks:
+
+```bash
+MUSTER_INTERACTIVE_TERMINAL_ENABLED=true \
+MUSTER_DEFAULT_TASK_RUNTIME_MODE=interactive \
+bash scripts/install.sh
+```
+
+Interactive terminal connections are deliberately loopback-only. Accessing a
+Muster frontend from another machine can still use structured tasks, but it
+cannot attach to a host PTY.
 
 This runs `scripts/install.sh`, which:
 

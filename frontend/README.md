@@ -25,6 +25,11 @@ identity, runtime state, view switching, live connection health, actions, and
 an expandable token HUD. Invocation and retry history move to the Run Details
 drawer, leaving the full content width for the terminal.
 
+Tasks whose `runtime_mode` is `interactive` replace the transcript and message
+composer with an xterm.js instance attached to the backend PTY WebSocket.
+Refresh/reconnect replays retained output, and only one browser tab owns the
+input lease at a time. Structured tasks keep the transcript/composer flow.
+
 The global Agent, Skill, and MCP registry pages include an import workflow
 that scans the local user-level Claude Code and Codex environments through the
 native backend. It supports source/type filtering, redacted configuration

@@ -135,6 +135,33 @@ class CodexAdapter:
         cmd += self._capability_flags(task, bindings)
         return BackendCommand(argv=cmd, stdin_payload=rendered_prompt)
 
+    def build_interactive_command(
+        self,
+        task: Task,
+        project: Project,
+        bindings: AdapterBindings,
+        secrets: dict[str, str],
+        prompt: str | None = None,
+    ) -> BackendCommand:
+        rendered_prompt = self._prompt(task, bindings, prompt or task.initial_prompt)
+        cmd = [settings.codex_bin]
+        model = task.model or (
+            project.default_model
+            if getattr(task, "backend", None) == getattr(project, "default_backend", None)
+            else None
+        )
+        if model:
+            cmd += ["--model", model]
+        cmd += ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+        if bindings.primary_directory:
+            cmd += ["--cd", bindings.primary_directory]
+        for directory in bindings.directories:
+            if directory != bindings.primary_directory:
+                cmd += ["--add-dir", directory]
+        cmd += self._capability_flags(task, bindings)
+        cmd.append(rendered_prompt)
+        return BackendCommand(argv=cmd)
+
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()
         if not raw:

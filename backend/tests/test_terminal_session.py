@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import asyncio
+import os
+
+import pytest
+
+from app.services.terminal_session import TerminalSession
+
+
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="PTY runtime is POSIX-only")
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_streams_input_output_and_exit(tmp_path):
+    output = bytearray()
+    exited = asyncio.Event()
+    exit_codes: list[int] = []
+
+    async def on_output(data: bytes) -> None:
+        output.extend(data)
+
+    async def on_exit(exit_code: int) -> None:
+        exit_codes.append(exit_code)
+        exited.set()
+
+    session = TerminalSession(
+        ["/bin/sh", "-c", "printf 'ready\\n'; IFS= read -r line; printf 'got:%s\\n' \"$line\""],
+        cwd=str(tmp_path),
+        env=dict(os.environ),
+        cols=80,
+        rows=24,
+        on_output=on_output,
+        on_exit=on_exit,
+    )
+
+    await session.start()
+    for _ in range(100):
+        if b"ready" in output:
+            break
+        await asyncio.sleep(0.01)
+    await session.resize(100, 30)
+    await session.write(b"hello terminal\n")
+    await asyncio.wait_for(exited.wait(), timeout=5)
+
+    assert exit_codes == [0]
+    assert b"ready" in output
+    assert b"got:hello terminal" in output
+    assert session.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_terminate_stops_process_group(tmp_path):
+    exited = asyncio.Event()
+
+    async def on_output(_data: bytes) -> None:
+        return None
+
+    async def on_exit(_exit_code: int) -> None:
+        exited.set()
+
+    session = TerminalSession(
+        ["/bin/sh", "-c", "sleep 30 & wait"],
+        cwd=str(tmp_path),
+        env=dict(os.environ),
+        on_output=on_output,
+        on_exit=on_exit,
+    )
+    await session.start()
+    await session.terminate(grace_seconds=0.2)
+    await asyncio.wait_for(exited.wait(), timeout=5)
+
+    assert session.returncode is not None

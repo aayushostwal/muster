@@ -216,6 +216,35 @@ delivery" below. It is never itself a PrDeliveryRun.
 Client -> server: not used for sending chat (that's the REST POST, so it's
 durable even if the socket drops); reserved for future typing indicators.
 
+### Interactive terminal WebSocket
+
+Manual tasks may opt into `runtime_mode="interactive"`. These tasks run the
+native Codex or Claude Code TUI inside a host POSIX PTY and use a separate,
+bidirectional endpoint:
+
+```
+WS /ws/tasks/{id}/terminal
+```
+
+The first client frame must be
+`{"type":"attach","cols":120,"rows":32,"after_seq":0}`. Subsequent client
+frames are `input` (base64 bytes, maximum 64 KiB), `resize`, `take_control`,
+and `ack`. Server frames are `ready`, `output` (base64 PTY bytes plus a
+monotonic sequence), `gap`, `control`, `exit`, and `error`.
+
+One attached browser owns the input lease; additional tabs are read-only
+until they explicitly take control. Browser disconnects do not stop the PTY.
+Output is retained in a bounded in-memory replay buffer and in a mode-0600 log
+under `data/terminals/<task>/<invocation>.ttylog`. Cancel, restart, delete,
+runtime switch, and backend shutdown terminate the entire PTY process group.
+
+The terminal endpoint is disabled unless
+`MUSTER_INTERACTIVE_TERMINAL_ENABLED=true`, accepts only loopback clients, and
+checks the browser `Origin` against `MUSTER_TERMINAL_ALLOWED_ORIGINS`. It is
+not a remotely exposed shell or a replacement for application authentication.
+Cron tasks always use `runtime_mode="structured"` and the JSON process manager.
+Existing tasks are migrated as structured tasks.
+
 ## Process manager (`backend/app/services/process_manager.py`)
 
 Single in-process asyncio-based manager (module-level singleton), holding at

@@ -42,6 +42,7 @@ import { ActivityFeed, AgentActivity } from "@/components/task/activity-panels";
 import { TaskTokenHud } from "@/components/task/task-token-hud";
 import { TerminalFrame, TerminalThread } from "@/components/task/terminal-thread";
 import { MagicCanvas } from "@/components/task/magic-canvas";
+import { LiveTerminal } from "@/components/task/live-terminal";
 import { PrDeliveryPanel } from "@/components/task/pr-delivery-bar";
 import { SlashCommandMenu } from "@/components/task/slash-command-menu";
 import { useTaskStream } from "@/hooks/use-task-stream";
@@ -120,6 +121,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const latestAttempt = attempts.data?.items.at(-1);
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
   const pendingApproval = approvals.data?.items.find((approval) => approval.status === "pending");
+  const availableViews = current.runtime_mode === "interactive" ? (["terminal"] as const) : (["terminal", "activity", "agents"] as const);
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
@@ -139,13 +141,13 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         </div>
 
         <nav className="hidden shrink-0 rounded-lg border border-white/[0.06] bg-black/15 p-1 lg:flex" aria-label="Task views">
-          {(["terminal", "activity", "agents"] as const).map((item) => {
+          {availableViews.map((item) => {
             const Icon = item === "terminal" ? TerminalSquare : item === "activity" ? Activity : Network;
             return <button key={item} onClick={() => setView(item)} aria-pressed={view === item} className={cn("flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.64rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600 hover:text-slate-300")}><Icon className="h-3.5 w-3.5" />{item}{item === "activity" && events.data?.items.length ? <span className="font-mono text-[0.53rem] text-slate-600">{events.data.items.length}</span> : null}</button>;
           })}
         </nav>
 
-        <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />
+        {current.runtime_mode === "structured" && <TaskTokenHud tokenUsage={tokenUsage} task={current} invocations={invocations.data?.items ?? []} />}
         <Tooltip label="Open Magic Canvas" side="bottom"><Button size="icon" variant={canvasOpen ? "primary" : "ghost"} onClick={() => setCanvasOpen((value) => !value)} aria-label="Toggle Magic Canvas"><PanelRightOpen className="h-4 w-4" /></Button></Tooltip>
         <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"} side="bottom"><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
         <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
@@ -155,7 +157,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
           {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task" side="bottom"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => runAction("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
           <Tooltip label="Run details" side="bottom"><Button size="icon" variant="ghost" onClick={() => setDetailsOpen(true)} aria-label="Open task details"><History className="h-4 w-4" /></Button></Tooltip>
           <Tooltip label="Task controls" side="bottom"><Button size="icon" variant="ghost" onClick={() => setSettingsOpen(true)} aria-label="Open task settings"><Settings2 className="h-4 w-4" /></Button></Tooltip>
-          <Tooltip label="Raw transcript" side="bottom" align="end"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>
+          {current.runtime_mode === "structured" && <Tooltip label="Raw transcript" side="bottom" align="end"><Button className="hidden md:inline-flex" size="icon" variant="ghost" onClick={() => setTranscriptOpen(true)} aria-label="Open raw transcript"><FileText className="h-4 w-4" /></Button></Tooltip>}
           <Tooltip label="Delete task" side="bottom" align="end"><Button size="icon" variant="ghost" onClick={() => setDeleteOpen(true)} aria-label="Delete task"><Trash2 className="h-4 w-4" /></Button></Tooltip>
         </div>
         <Button className="shrink-0 sm:hidden" size="icon" variant="ghost" onClick={() => setMobileActionsOpen(true)} aria-label="Open task actions"><MoreHorizontal className="h-4 w-4" /></Button>
@@ -180,9 +182,9 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       />
       <div className={cn("mt-2 min-h-0 flex-1 gap-2", canvasOpen && "xl:grid xl:grid-cols-[minmax(28rem,0.92fr)_minmax(30rem,1.08fr)]")}>
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
-          <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>
-          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
-          {view === "terminal" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
+          {availableViews.length > 1 && <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{availableViews.map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>}
+          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame>{current.runtime_mode === "interactive" ? <LiveTerminal taskId={taskId} /> : <TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} />}</TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
+          {view === "terminal" && current.runtime_mode === "structured" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
         </section>
         <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
       </div>

@@ -15,6 +15,7 @@ from app.api.routes import (
     registry,
     secrets as secrets_routes,
     task_tags,
+    terminal_ws,
     tasks,
     tools,
     ws,
@@ -57,6 +58,7 @@ app.include_router(tasks.router, prefix="/api")
 app.include_router(task_tags.router, prefix="/api")
 app.include_router(pr_delivery.router, prefix="/api")
 app.include_router(ws.router)
+app.include_router(terminal_ws.router)
 
 
 @app.get("/api/health")

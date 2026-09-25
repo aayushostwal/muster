@@ -8,6 +8,8 @@ unset MUSTER_POSTGRES_HOST MUSTER_POSTGRES_PORT MUSTER_POSTGRES_USER
 unset MUSTER_POSTGRES_PASSWORD MUSTER_POSTGRES_DB MUSTER_BACKEND_PORT
 unset MUSTER_FRONTEND_PORT MUSTER_PG_WAIT_TIMEOUT MUSTER_API_URL
 unset MUSTER_PYTHON_VERSION MUSTER_UV_VERSION
+unset MUSTER_INTERACTIVE_TERMINAL_ENABLED MUSTER_DEFAULT_TASK_RUNTIME_MODE
+unset MUSTER_TERMINAL_ALLOWED_ORIGINS
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/muster-install-test.XXXXXX")"
@@ -183,6 +185,8 @@ assert_mode_600 "$MAC_HOME/Library/LaunchAgents/com.muster.backend.plist"
 [ ! -e "$MAC_HOME/.muster/docker-compose.yml" ]
 assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_BACKEND_PORT=8181"
 assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_POSTGRES_PASSWORD=p&<>\$x"
+assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_INTERACTIVE_TERMINAL_ENABLED=false"
+assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_DEFAULT_TASK_RUNTIME_MODE=structured"
 
 "$REAL_PYTHON" - "$MAC_HOME/Library/LaunchAgents/com.muster.backend.plist" <<'PY'
 import plistlib

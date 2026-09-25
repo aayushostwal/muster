@@ -37,6 +37,7 @@ from app.db.models import (
     MessageSender,
     Project,
     ProjectCapabilityOverride,
+    RuntimeMode,
     Skill,
     Task,
     TaskBackendSession,
@@ -1633,6 +1634,11 @@ def _serialize_invocation(invocation: TaskInvocation) -> dict:
         "task_id": str(invocation.task_id),
         "sequence": invocation.sequence,
         "backend": invocation.backend.value,
+        "runtime_mode": (
+            invocation.runtime_mode.value
+            if isinstance(invocation.runtime_mode, RuntimeMode)
+            else invocation.runtime_mode
+        ),
         "session_id": invocation.session_id,
         "model": invocation.model,
         "thinking_level": invocation.thinking_level,
@@ -1658,4 +1664,12 @@ def _serialize_event(event: TaskEvent) -> dict:
     }
 
 
-process_manager = ProcessManager()
+_structured_process_manager = ProcessManager()
+
+# Imported after ProcessManager is defined so TerminalManager can reuse the
+# mature binding/context resolution without a module import cycle.
+from app.services.runtime_manager import RuntimeManager  # noqa: E402
+from app.services.terminal_manager import TerminalManager  # noqa: E402
+
+terminal_manager = TerminalManager(_structured_process_manager)
+process_manager = RuntimeManager(_structured_process_manager, terminal_manager)

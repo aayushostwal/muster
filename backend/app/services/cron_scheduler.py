@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.models import CronJob, Task, TaskStatus
+from app.db.models import CronJob, RuntimeMode, Task, TaskStatus
 from app.db.session import SessionLocal
 from app.services.process_manager import process_manager
 
@@ -99,6 +99,7 @@ async def _fire_cron_job(cron_job_id: uuid.UUID) -> None:
             backend=cron_job.backend,
             model=cron_job.model,
             status=TaskStatus.queued,
+            runtime_mode=RuntimeMode.structured,
             cron_job_id=cron_job.id,
         )
         db.add(task)

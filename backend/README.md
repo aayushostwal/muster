@@ -93,6 +93,14 @@ Agent runtime safeguards are configurable with
 `MUSTER_RUNTIME_MAX_SECONDS` (default `7200`), and
 `MUSTER_RUNTIME_STREAM_LIMIT_BYTES` (default `8388608`).
 
+Native interactive task terminals are opt-in with
+`MUSTER_INTERACTIVE_TERMINAL_ENABLED=true`. Set
+`MUSTER_DEFAULT_TASK_RUNTIME_MODE=interactive` to make newly created manual
+tasks use the Codex/Claude TUI; cron tasks remain structured. The terminal
+WebSocket is loopback-only and additionally checks
+`MUSTER_TERMINAL_ALLOWED_ORIGINS`. PTY logs are stored beneath
+`~/.muster/data/terminals` with owner-only permissions.
+
 ## Running it
 
 ```bash
