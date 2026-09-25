@@ -154,12 +154,21 @@ interval logged inline as a system message.
 ## Development
 
 ```bash
-# Backend tests (in-memory SQLite, no external services required)
-cd backend && pip install -r requirements.txt && pytest
+# Install both stacks, then run backend/frontend tests with 95% gates
+make install
+make test
 
-# Frontend type-check
-cd frontend && npm install && npx tsc --noEmit
+# Run either coverage suite independently
+make test-backend-coverage
+make test-frontend-coverage
 ```
+
+Backend coverage measures deterministic API, schema, configuration, and
+domain-service code; the subprocess, PTY/WebSocket, capability-discovery, and
+VCS-delivery boundaries continue to run in the same test job through their
+hermetic integration tests. Frontend coverage measures reusable client logic
+and hooks, while component composition is checked by the TypeScript/Next.js
+build. Both measured scopes enforce at least 95% coverage in CI.
 
 ## License
 

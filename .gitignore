@@ -226,7 +226,13 @@ backend/.venv/
 # Node
 frontend/node_modules/
 frontend/dist/
+frontend/coverage/
 frontend/tsconfig.tsbuildinfo
+
+# Test coverage
+backend/.coverage
+backend/coverage.xml
+backend/htmlcov/
 
 # Local data / secrets
 .envrc.local
