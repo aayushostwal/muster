@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from mcp import Client
+from mcp import Client, StdioServerParameters
+from mcp.server.mcpserver.exceptions import ToolError
 
 from app.mcp_server import MusterApiClient, build_server
 
@@ -115,6 +118,7 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
                 "title": "  Add an MCP layer  ",
                 "prompt": "  Implement and test the MCP server  ",
                 "backend": "claude_code",
+                "runtime_mode": "interactive",
                 "model": "sonnet",
                 "tags": ["integration"],
             },
@@ -129,6 +133,7 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
         "initial_prompt": "Implement and test the MCP server",
         "tags": ["integration"],
         "backend": "claude_code",
+        "runtime_mode": "interactive",
         "model": "sonnet",
     }
 
@@ -227,3 +232,166 @@ async def test_tool_errors_are_readable_to_mcp_clients() -> None:
     assert "Invalid task ID: not-a-uuid" in invalid_id.content[0].text
     assert gated.is_error
     assert "Muster API returned 422: PR approval is required" in gated.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_create_task_defaults_and_blank_input_validation() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/api/projects":
+            return httpx.Response(200, json={"items": [_project()]})
+        return httpx.Response(201, json=_task(tags=[]))
+
+    api = MusterApiClient(
+        base_url="http://muster.test", transport=httpx.MockTransport(handler)
+    )
+    async with Client(build_server(api)) as client:
+        created = await client.call_tool(
+            "create_task",
+            {"project": PROJECT_ID, "title": "Small task", "prompt": "Do it"},
+        )
+        blank_title = await client.call_tool(
+            "create_task",
+            {"project": PROJECT_ID, "title": "  ", "prompt": "Do it"},
+        )
+        blank_prompt = await client.call_tool(
+            "create_task",
+            {"project": PROJECT_ID, "title": "Small task", "prompt": "  "},
+        )
+        blank_message = await client.call_tool(
+            "send_task_message", {"task_id": TASK_ID, "message": "  "}
+        )
+
+    assert not created.is_error
+    assert json.loads(requests[1].content) == {
+        "title": "Small task",
+        "initial_prompt": "Do it",
+        "tags": [],
+    }
+    assert blank_title.is_error
+    assert "Task title must not be empty" in blank_title.content[0].text
+    assert blank_prompt.is_error
+    assert "Task prompt must not be empty" in blank_prompt.content[0].text
+    assert blank_message.is_error
+    assert "Message must not be empty" in blank_message.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_global_task_listing_forwards_status_and_sorts_results() -> None:
+    older_id = "44444444-4444-4444-8444-444444444444"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/tasks"
+        assert request.url.params["status"] == "done"
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    _task(id=older_id, updated_at="2026-09-25T09:00:00Z"),
+                    _task(status="done"),
+                ]
+            },
+        )
+
+    api = MusterApiClient(
+        base_url="http://muster.test", transport=httpx.MockTransport(handler)
+    )
+    async with Client(build_server(api), raise_exceptions=True) as client:
+        result = await client.call_tool("list_tasks", {"status": "done"})
+
+    assert result.structured_content is not None
+    assert [task["id"] for task in result.structured_content["items"]] == [
+        TASK_ID,
+        older_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_and_blank_projects_return_actionable_errors() -> None:
+    duplicate = _project() | {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "name": "muster",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": [_project(), duplicate]})
+
+    api = MusterApiClient(
+        base_url="http://muster.test", transport=httpx.MockTransport(handler)
+    )
+    async with Client(build_server(api)) as client:
+        ambiguous = await client.call_tool(
+            "create_task",
+            {"project": "Muster", "title": "Work", "prompt": "Do work"},
+        )
+        blank = await client.call_tool(
+            "create_task",
+            {"project": "  ", "title": "Work", "prompt": "Do work"},
+        )
+
+    assert ambiguous.is_error
+    assert (
+        "More than one Muster project is named 'Muster'; use a project ID"
+        in ambiguous.content[0].text
+    )
+    assert blank.is_error
+    assert "Project name or ID is required" in blank.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_api_client_normalizes_transport_and_response_failures() -> None:
+    def offline(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    unavailable = MusterApiClient(
+        base_url="http://muster.test", transport=httpx.MockTransport(offline)
+    )
+    with pytest.raises(ToolError, match="Muster API is unavailable.*connection refused"):
+        await unavailable.request("GET", "/api/projects")
+
+    responses = iter(
+        [
+            httpx.Response(502, text="upstream unavailable"),
+            httpx.Response(204),
+            httpx.Response(200, text="not json"),
+        ]
+    )
+
+    def response_sequence(request: httpx.Request) -> httpx.Response:
+        return next(responses)
+
+    api = MusterApiClient(
+        base_url="http://muster.test",
+        transport=httpx.MockTransport(response_sequence),
+    )
+    with pytest.raises(ToolError, match="Muster API returned 502: upstream unavailable"):
+        await api.request("GET", "/api/projects")
+    assert await api.request("POST", f"/api/tasks/{TASK_ID}/cancel") == {}
+    with pytest.raises(ToolError, match="Muster API returned a non-JSON response"):
+        await api.request("GET", "/api/projects")
+
+
+@pytest.mark.asyncio
+async def test_server_completes_a_real_stdio_handshake() -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "app.mcp_server"],
+        cwd=str(backend_dir),
+    )
+
+    async with Client(params, raise_exceptions=True) as client:
+        tools = await client.list_tools()
+
+    assert {tool.name for tool in tools.tools} == {
+        "list_projects",
+        "create_task",
+        "list_tasks",
+        "get_task",
+        "send_task_message",
+        "cancel_task",
+        "complete_task",
+    }
