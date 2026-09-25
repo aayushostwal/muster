@@ -22,7 +22,8 @@ export MUSTER_POSTGRES_PASSWORD := $(DB_PASSWORD)
 .PHONY: help install backend-install frontend-install \
         up down db-up db-down logs \
         migrate migration dev-backend dev-frontend \
-        test test-backend test-install typecheck-frontend build-frontend \
+        test test-backend test-backend-coverage test-frontend test-frontend-coverage \
+        test-install typecheck-frontend build-frontend \
         clean clean-backend clean-frontend
 
 help: ## Show this help
@@ -73,6 +74,9 @@ dev-backend: ## Run the backend with hot reload (needs `make db-up` + `make migr
 test-backend: ## Run backend tests (in-memory SQLite, no Postgres needed)
 	cd $(BACKEND_DIR) && $(PYTHON) -m pytest
 
+test-backend-coverage: ## Run backend tests and enforce the 95% unit-coverage gate
+	cd $(BACKEND_DIR) && $(PYTHON) -m pytest --cov --cov-report=term-missing --cov-report=xml
+
 test-install: ## Run hermetic macOS/Linux installer smoke tests
 	./scripts/test-install.sh
 
@@ -84,12 +88,18 @@ dev-frontend: ## Run the frontend dev server (http://localhost:5173)
 typecheck-frontend: ## Type-check the frontend without emitting
 	cd $(FRONTEND_DIR) && npx tsc --noEmit
 
+test-frontend: ## Run frontend unit tests once
+	cd $(FRONTEND_DIR) && npm test
+
+test-frontend-coverage: ## Run frontend tests and enforce the 95% coverage gate
+	cd $(FRONTEND_DIR) && npm run test:coverage
+
 build-frontend: ## Production build of the frontend
 	cd $(FRONTEND_DIR) && npm run build
 
 ## --- Aggregate ---------------------------------------------------------
 
-test: test-backend typecheck-frontend ## Run backend tests + frontend type-check
+test: test-backend-coverage test-frontend-coverage typecheck-frontend ## Run all tests and coverage gates
 
 ## --- Cleanup -------------------------------------------------------------
 

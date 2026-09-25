@@ -1,0 +1,26 @@
+[run]
+source = app
+concurrency = greenlet
+omit =
+    # Lifecycle/process, PTY/WebSocket, capability-discovery, and VCS delivery
+    # adapters are covered by their hermetic integration suites. They are
+    # intentionally outside the deterministic unit-coverage denominator.
+    app/main.py
+    app/api/routes/capability_imports.py
+    app/api/routes/pr_delivery.py
+    app/api/routes/terminal_ws.py
+    app/api/routes/ws.py
+    app/services/agent_backends/*
+    app/services/capability_imports.py
+    app/services/pr_delivery.py
+    app/services/process_manager.py
+    app/services/terminal_manager.py
+    app/services/terminal_session.py
+
+[report]
+show_missing = true
+skip_covered = true
+fail_under = 95
+
+[xml]
+output = coverage.xml
