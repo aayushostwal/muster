@@ -19,9 +19,9 @@ Linux). The backend is a Python/FastAPI app, so instead:
   `RunAtLoad`/`WantedBy=default.target` reproduce the "always running,
   restarts on crash, starts on login" behavior a compiled binary would get
   from the same service managers.
-- `musterctl` itself is a POSIX shell script, not a compiled CLI, installed
-  to `/usr/local/bin/musterctl` (falling back to `~/.local/bin/musterctl` if
-  that isn't writable).
+- `musterctl` and `muster-mcp` are POSIX shell wrappers, not compiled CLIs,
+  installed to `/usr/local/bin` (falling back to `~/.local/bin` if that isn't
+  writable).
 
 This is a deliberate trade-off documented here explicitly rather than a
 silent gap versus the PRD: it keeps the install path correct and simple
@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/aayushostwal/muster/main/scripts/in
 | `MUSTER_REPO_URL` | This GitHub repository | Git remote used by bootstrap/reinstall. |
 | `MUSTER_REPO_REF` | `main` | Branch or tag cloned from the remote. |
 | `MUSTER_SOURCE_DIR` | Auto-detected local checkout | Explicit local source for checkout-based installs. |
-| `MUSTER_BIN_DIR` | `/usr/local/bin` or `~/.local/bin` | Explicit `musterctl` destination, useful for managed environments. |
+| `MUSTER_BIN_DIR` | `/usr/local/bin` or `~/.local/bin` | Explicit destination for `musterctl` and `muster-mcp`, useful for managed environments. |
 | `MUSTER_PYTHON_VERSION` | `3.12` | Managed Python version provisioned when the host has no compatible interpreter. |
 | `MUSTER_UV_VERSION` | `0.12.17` | Pinned uv release used to provision managed Python. |
 | `MUSTER_BACKEND_PORT` | `8080` | Native backend listen port. |
@@ -88,8 +88,8 @@ This runs `scripts/install.sh`, which:
    Python 3.12 runtime under `~/.muster`; it never replaces the system Python.
 3. Fetches source into a staging directory via Git clone or local checkout
    copy, verifies it, then atomically replaces `~/.muster/app`.
-4. Installs `musterctl` before runtime setup, so recovery and diagnostic
-   commands remain available if a later build, migration, or service step fails.
+4. Installs `musterctl` and `muster-mcp` before runtime setup, so recovery,
+   diagnostic, and MCP commands remain available if a later step fails.
 5. Creates a fresh `~/.muster/venv`, verifies its interpreter is Python 3.11+
    and installs `backend/requirements.txt`.
 6. Runs `~/.muster/app/docker-compose.yml` in place so its frontend build
@@ -106,6 +106,38 @@ This runs `scripts/install.sh`, which:
 See the root [`README.md`](../README.md) quick-start section — run Postgres
 + frontend via `docker compose`, and the backend directly with
 `uvicorn --reload`.
+
+## Connect Codex or Claude Code over MCP
+
+Muster exposes a process-spawned stdio MCP server through the installed
+`muster-mcp` wrapper. The wrapper reads the backend port from
+`~/.muster/muster.env` and communicates only with the loopback REST API, so
+the supervised Muster backend must be running.
+
+```bash
+command -v muster-mcp
+codex mcp add muster -- "$(command -v muster-mcp)"
+claude mcp add --scope user muster -- "$(command -v muster-mcp)"
+```
+
+Restart the client after registration if it was already open. Use
+`codex mcp list` or `/mcp` inside Claude Code to verify the connection. The
+server exposes these tools:
+
+| Tool | Operation |
+|---|---|
+| `list_projects` | Discover project names, IDs, and runtime defaults. |
+| `create_task` | Resolve an exact project name or ID, create a task, and dispatch its agent immediately. |
+| `list_tasks` | List recent tasks globally or for one project, optionally by status. |
+| `get_task` | Read the complete current task state and original prompt. |
+| `send_task_message` | Add a user follow-up and resume the task agent. |
+| `cancel_task` | Cancel active work and stop its agent process. |
+| `complete_task` | Mark reviewed work complete if the project's PR policy permits it. |
+
+For a non-default installation, set `MUSTER_HOME` in the MCP server's process
+environment. `MUSTER_API_URL` can explicitly override the loopback endpoint,
+which is primarily useful for local development. The MCP transport uses
+stdout, so wrapper diagnostics are intentionally written only to stderr.
 
 ---
 
@@ -145,11 +177,12 @@ musterctl upgrade
 
 1. `git pull --ff-only` in `~/.muster/app` (or warns and skips for installs
    copied from a local checkout without Git metadata).
-2. Reinstalls `backend/requirements.txt` into the existing venv.
-3. `alembic upgrade head`.
-4. Pulls the Postgres image and rebuilds the frontend from the updated source,
+2. Refreshes `musterctl` and `muster-mcp` beside the running CLI.
+3. Reinstalls `backend/requirements.txt` into the existing venv.
+4. `alembic upgrade head`.
+5. Pulls the Postgres image and rebuilds the frontend from the updated source,
    then recreates both Compose services.
-5. Restarts the backend service.
+6. Restarts the backend service.
 
 No Postgres data, `~/.muster/data`, or secrets are touched by an upgrade.
 
@@ -183,7 +216,7 @@ passed.
 | Linux systemd user unit | `~/.config/systemd/user/muster.service` |
 | Compose file | `~/.muster/app/docker-compose.yml` |
 | Postgres connection info | `~/.muster/muster.env` (`MUSTER_POSTGRES_*`, mode 600) |
-| CLI | `/usr/local/bin/musterctl` or `~/.local/bin/musterctl` |
+| Command wrappers | `/usr/local/bin/{musterctl,muster-mcp}` or `~/.local/bin/{musterctl,muster-mcp}` |
 
 Templates for the service files live in `scripts/launchd/` and
 `scripts/systemd/`. `scripts/install.sh` renders their home, venv, backend,

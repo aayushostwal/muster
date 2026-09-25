@@ -200,12 +200,34 @@ cmd_logs() {
 }
 
 cmd_upgrade() {
+  local bin_dir command current_command source
+
   info "Pulling latest source..."
   if [ -d "$APP_DIR/.git" ]; then
     git -C "$APP_DIR" pull --ff-only
   else
     warn "No git checkout at $APP_DIR — skipping source update. Re-run the installer to refresh from a release."
   fi
+
+  case "$0" in
+    /*) bin_dir="$(dirname "$0")" ;;
+    */*) bin_dir="$(cd "$(dirname "$0")" && pwd)" ;;
+    *)
+      current_command="$(command -v "$0" 2>/dev/null || true)"
+      [ -n "$current_command" ] || die "Cannot resolve the installed musterctl path"
+      bin_dir="$(dirname "$current_command")"
+      ;;
+  esac
+  for command in musterctl muster-mcp; do
+    source="$APP_DIR/cli/$command"
+    if [ -f "$source" ]; then
+      cp "$source" "$bin_dir/$command"
+      chmod +x "$bin_dir/$command"
+      info "Updated $command in $bin_dir"
+    else
+      warn "$source is missing; re-run the installer to refresh command wrappers."
+    fi
+  done
 
   info "Reinstalling backend deps..."
   "$VENV_DIR/bin/pip" install -r "$BACKEND_DIR/requirements.txt"

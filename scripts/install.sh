@@ -362,12 +362,10 @@ ENV_STAGE=""
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# 4. Install musterctl before long-running setup
+# 4. Install command wrappers before long-running setup
 # ---------------------------------------------------------------------------
 install_cli() {
-  local src="$APP_DIR/cli/musterctl" target_dir
-  [ -f "$src" ] || die "cli/musterctl not found at $src"
-  chmod +x "$src"
+  local target_dir command src
 
   if [ -n "$BIN_DIR" ]; then
     target_dir="$BIN_DIR"
@@ -380,9 +378,14 @@ install_cli() {
   fi
 
   mkdir -p "$target_dir"
-  cp "$src" "$target_dir/musterctl"
-  chmod +x "$target_dir/musterctl"
-  info "Installed musterctl to $target_dir/musterctl"
+  for command in musterctl muster-mcp; do
+    src="$APP_DIR/cli/$command"
+    [ -f "$src" ] || die "cli/$command not found at $src"
+    chmod +x "$src"
+    cp "$src" "$target_dir/$command"
+    chmod +x "$target_dir/$command"
+    info "Installed $command to $target_dir/$command"
+  done
 
   if [ "$target_dir" != "/usr/local/bin" ]; then
     case ":$PATH:" in

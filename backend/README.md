@@ -52,6 +52,13 @@ Creating a Task or posting a chat message are both fire-and-forget triggers
 into this manager — there is deliberately no separate "run" action anywhere
 in the API.
 
+**MCP server** (`app/mcp_server.py`) — a local stdio adapter for Codex, Claude
+Code, and other MCP clients. It exposes project discovery and the core Task
+lifecycle as MCP tools, but deliberately calls the loopback REST API instead
+of touching SQLAlchemy or the process manager directly. This preserves the
+same validation, dispatch, permission, and PR-completion rules as the web UI.
+The production entrypoint is the installed `muster-mcp` wrapper.
+
 **Agent backend adapters** (`app/services/agent_backends/`) — thin,
 swappable translation layers between the process manager's generic lifecycle
 and each CLI's actual flags and streaming JSON format. `claude_code.py`
@@ -107,6 +114,13 @@ WebSocket is loopback-only and additionally checks
 pip install -r requirements.txt
 alembic upgrade head
 uvicorn app.main:app --reload --port 8080
+```
+
+With that API running, the MCP server can also be started directly during
+development:
+
+```bash
+MUSTER_API_URL=http://127.0.0.1:8080 python -m app.mcp_server
 ```
 
 Tests (`tests/`) use an in-memory SQLite session in place of Postgres and
