@@ -141,7 +141,7 @@ def test_claude_writes_stdio_and_remote_mcp_config():
     assert remote["headers"]["Authorization"] == "Bearer ${MCP_TOKEN}"
 
 
-def test_claude_normalizes_imported_agent_tool_lists():
+def test_claude_normalizes_explicitly_invoked_agent_tool_lists():
     adapter = ClaudeCodeAdapter()
     bindings = AdapterBindings(
         primary_directory=None,
@@ -165,7 +165,7 @@ def test_claude_normalizes_imported_agent_tool_lists():
     )()
     project = type("ProjectStub", (), {"default_model": None})()
 
-    flags = adapter._base_flags(task, project, bindings, {})
+    flags = adapter._base_flags(task, project, bindings, {}, prompt="/reviewer check it")
     profiles = json.loads(flags[flags.index("--agents") + 1])
 
     assert profiles["reviewer"]["tools"] == ["Bash", "Read", "Grep"]
@@ -241,11 +241,19 @@ def test_codex_uses_primary_directory_and_additional_roots():
     assert "--cd" not in resumed.argv
     assert "--add-dir" not in resumed.argv
     assert "--sandbox" not in resumed.argv
-    assert command.argv[2] == "-"
+    assert command.argv[:4] == ["codex", "--no-daemon", "exec", "-"]
     assert command.stdin_payload is not None
     assert command.stdin_payload.endswith("Fix it")
     assert "no GitHub MCP connector" in command.stdin_payload
-    assert resumed.argv[4] == "-"
+    assert resumed.argv[:7] == [
+        "codex",
+        "--no-daemon",
+        "exec",
+        "resume",
+        "session-id",
+        "-",
+        "--json",
+    ]
     assert resumed.stdin_payload is not None
     assert resumed.stdin_payload.endswith("Continue")
 
@@ -282,6 +290,92 @@ def test_fresh_session_commands_accept_runtime_handoff_prompt():
     assert codex.stdin_payload.endswith("Runtime handoff")
     assert "Runtime handoff" not in codex.argv
     assert "Original prompt" not in codex.argv
+
+
+def test_agent_and_skill_instructions_are_loaded_only_when_explicitly_invoked():
+    bindings = AdapterBindings(
+        primary_directory="/workspace/repo",
+        directories=["/workspace/repo"],
+        mcp_servers={},
+        tool_rules=[],
+        agent_profiles={
+            "ui-agent": {
+                "description": "UI agent",
+                "prompt": "UI_AGENT_PRIVATE_INSTRUCTIONS",
+            },
+            "security-agent": {
+                "description": "Security agent",
+                "prompt": "SECURITY_AGENT_PRIVATE_INSTRUCTIONS",
+            },
+        },
+        skills={
+            "ui-review": "UI_SKILL_PRIVATE_INSTRUCTIONS",
+            "security-review": "SECURITY_SKILL_PRIVATE_INSTRUCTIONS",
+        },
+    )
+    task = type(
+        "TaskStub",
+        (),
+        {
+            "initial_prompt": "Fix the settings page",
+            "backend": AgentBackend.codex,
+            "model": None,
+            "fallback_models": [],
+            "thinking_level": None,
+        },
+    )()
+    project = type(
+        "ProjectStub",
+        (),
+        {"default_backend": AgentBackend.codex, "default_model": None},
+    )()
+
+    codex_plain = CodexAdapter().build_command(task, project, bindings, {})
+    claude_plain = ClaudeCodeAdapter().build_command(task, project, bindings, {})
+    codex_invoked = CodexAdapter().build_command(
+        task,
+        project,
+        bindings,
+        {},
+        "/UI-REVIEW /ui-agent Fix the settings page",
+    )
+    claude_invoked = ClaudeCodeAdapter().build_command(
+        task,
+        project,
+        bindings,
+        {},
+        "/ui-review /UI-AGENT Fix the settings page",
+    )
+
+    assert "UI_SKILL_PRIVATE_INSTRUCTIONS" not in (codex_plain.stdin_payload or "")
+    assert "SECURITY_SKILL_PRIVATE_INSTRUCTIONS" not in (codex_plain.stdin_payload or "")
+    assert "UI_SKILL_PRIVATE_INSTRUCTIONS" not in " ".join(claude_plain.argv)
+    assert "SECURITY_SKILL_PRIVATE_INSTRUCTIONS" not in " ".join(claude_plain.argv)
+    assert "UI_AGENT_PRIVATE_INSTRUCTIONS" not in (codex_plain.stdin_payload or "")
+    assert "SECURITY_AGENT_PRIVATE_INSTRUCTIONS" not in (
+        codex_plain.stdin_payload or ""
+    )
+    assert "UI_AGENT_PRIVATE_INSTRUCTIONS" not in " ".join(claude_plain.argv)
+    assert "SECURITY_AGENT_PRIVATE_INSTRUCTIONS" not in " ".join(claude_plain.argv)
+
+    assert "UI_SKILL_PRIVATE_INSTRUCTIONS" in (codex_invoked.stdin_payload or "")
+    assert "SECURITY_SKILL_PRIVATE_INSTRUCTIONS" not in (
+        codex_invoked.stdin_payload or ""
+    )
+    assert "UI_AGENT_PRIVATE_INSTRUCTIONS" in (codex_invoked.stdin_payload or "")
+    assert "SECURITY_AGENT_PRIVATE_INSTRUCTIONS" not in (
+        codex_invoked.stdin_payload or ""
+    )
+    claude_system = claude_invoked.argv[
+        claude_invoked.argv.index("--append-system-prompt") + 1
+    ]
+    assert "UI_SKILL_PRIVATE_INSTRUCTIONS" in claude_system
+    assert "SECURITY_SKILL_PRIVATE_INSTRUCTIONS" not in claude_system
+    claude_agents = json.loads(
+        claude_invoked.argv[claude_invoked.argv.index("--agents") + 1]
+    )
+    assert set(claude_agents) == {"ui-agent"}
+    assert claude_agents["ui-agent"]["prompt"] == "UI_AGENT_PRIVATE_INSTRUCTIONS"
 
 
 def test_project_default_model_does_not_cross_runtime_boundary():
@@ -349,16 +443,68 @@ def test_codex_home_overlay_reuses_persistent_task_directory(monkeypatch, tmp_pa
     source_home.mkdir()
     sessions = source_home / "sessions"
     sessions.mkdir()
+    (sessions / "global-thread.jsonl").write_text("global\n")
     monkeypatch.setenv("CODEX_HOME", str(source_home))
     task_home = tmp_path / "muster-data" / "backend-sessions" / "task-123" / "codex"
 
     first = create_codex_home_overlay([], task_home)
+    assert not (first / "sessions").exists()
+    (first / "sessions").mkdir()
     rollout = first / "sessions" / "rollout-thread-123.jsonl"
     rollout.write_text("{}\n")
     second = create_codex_home_overlay([], task_home)
 
     assert first == second == task_home
+    assert not (second / "sessions").is_symlink()
     assert rollout.read_text() == "{}\n"
+    assert not (second / "sessions" / "global-thread.jsonl").exists()
+    assert not (sessions / "rollout-thread-123.jsonl").exists()
+
+
+def test_codex_home_overlay_removes_legacy_global_runtime_symlinks(monkeypatch, tmp_path):
+    source_home = tmp_path / "codex"
+    source_home.mkdir()
+    sessions = source_home / "sessions"
+    sessions.mkdir()
+    state = source_home / "state_5.sqlite"
+    state.write_bytes(b"global state")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    task_home = tmp_path / "task-home"
+    task_home.mkdir()
+    (task_home / "sessions").symlink_to(sessions, target_is_directory=True)
+    (task_home / "state_5.sqlite").symlink_to(state)
+
+    create_codex_home_overlay([], task_home)
+
+    assert not (task_home / "sessions").is_symlink()
+    assert not (task_home / "sessions").exists()
+    assert not (task_home / "state_5.sqlite").is_symlink()
+    assert not (task_home / "state_5.sqlite").exists()
+    assert sessions.is_dir()
+    assert state.read_bytes() == b"global state"
+
+
+def test_codex_home_overlay_preserves_legacy_links_for_known_resume_session(
+    monkeypatch, tmp_path
+):
+    source_home = tmp_path / "codex"
+    source_home.mkdir()
+    sessions = source_home / "sessions"
+    sessions.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    task_home = tmp_path / "task-home"
+    task_home.mkdir()
+    legacy_sessions = task_home / "sessions"
+    legacy_sessions.symlink_to(sessions, target_is_directory=True)
+
+    create_codex_home_overlay(
+        [],
+        task_home,
+        preserve_legacy_session=True,
+    )
+
+    assert legacy_sessions.is_symlink()
+    assert legacy_sessions.resolve() == sessions.resolve()
 
 
 def test_github_mcp_guidance_prevents_interactive_cli_login():
