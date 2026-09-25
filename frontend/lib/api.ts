@@ -109,6 +109,7 @@ export const api = {
       agent_id?: string;
     },
   ) => request<Task>(`/api/projects/${projectId}/tasks`, { method: "POST", ...json(body) }),
+  deleteTask: (id: string) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
   taskAction: (id: string, action: "cancel" | "restart" | "retry-now") =>
     request<Task>(`/api/tasks/${id}/${action}`, { method: "POST" }),
   updateTaskBackend: (id: string, backend: AgentBackend) =>

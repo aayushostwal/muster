@@ -112,6 +112,15 @@ async def get_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return await _get_task_or_404(db, task_id)
 
 
+@router.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    task = await _get_task_or_404(db, task_id)
+    if task.status in (TaskStatus.queued, TaskStatus.running, TaskStatus.waiting_on_you):
+        await process_manager.cancel(task_id)
+    await db.delete(task)
+    await db.commit()
+
+
 @router.post("/tasks/{task_id}/cancel", response_model=TaskRead)
 async def cancel_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     task = await _get_task_or_404(db, task_id)
