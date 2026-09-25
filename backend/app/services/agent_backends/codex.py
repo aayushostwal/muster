@@ -159,7 +159,7 @@ class CodexAdapter:
             if directory != bindings.primary_directory:
                 cmd += ["--add-dir", directory]
         cmd += self._capability_flags(task, bindings)
-        cmd.append(rendered_prompt)
+        cmd += ["--", rendered_prompt]
         return BackendCommand(argv=cmd)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:

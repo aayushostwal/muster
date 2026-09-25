@@ -122,6 +122,9 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
   const pendingApproval = approvals.data?.items.find((approval) => approval.status === "pending");
   const availableViews = current.runtime_mode === "interactive" ? (["terminal"] as const) : (["terminal", "activity", "agents"] as const);
+  const interactiveInvocationId = invocations.data?.items
+    .filter((invocation) => invocation.runtime_mode === "interactive")
+    .at(-1)?.id;
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-var(--header-height))] max-w-[112rem] flex-col overflow-hidden px-2 py-2 md:px-3 md:py-3">
@@ -151,7 +154,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         <Tooltip label="Open Magic Canvas" side="bottom"><Button size="icon" variant={canvasOpen ? "primary" : "ghost"} onClick={() => setCanvasOpen((value) => !value)} aria-label="Toggle Magic Canvas"><PanelRightOpen className="h-4 w-4" /></Button></Tooltip>
         <Tooltip label={connection === "live" ? "Runtime stream connected" : connection === "connecting" ? "Connecting to runtime" : "Runtime stream reconnecting"} side="bottom"><span className={cn("hidden h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.02] sm:grid", connection === "live" ? "text-signal-400" : "text-slate-600")}>{connection === "live" ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}</span></Tooltip>
         <div className="hidden shrink-0 items-center gap-0.5 border-l border-white/[0.07] pl-1.5 sm:flex">
-          {current.status === "waiting_on_you" && <Tooltip label="Mark conversation complete" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => runAction("complete")} aria-label="Mark conversation complete"><CheckCircle2 className="h-3.5 w-3.5" /></Button></Tooltip>}
+          {(current.status === "waiting_on_you" || (current.runtime_mode === "interactive" && current.status === "running")) && <Tooltip label="Mark conversation complete" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => runAction("complete")} aria-label="Mark conversation complete"><CheckCircle2 className="h-3.5 w-3.5" /></Button></Tooltip>}
           {current.status === "failed" && <Tooltip label="Retry now" side="bottom"><Button size="icon" variant="primary" loading={action.isPending} onClick={() => runAction("retry-now")} aria-label="Retry task now"><RefreshCcw className="h-3.5 w-3.5" /></Button></Tooltip>}
           <Tooltip label="Restart from beginning" side="bottom"><Button size="icon" loading={action.isPending && action.variables === "restart"} onClick={() => setRestartOpen(true)} aria-label="Restart task from beginning"><RotateCcw className="h-3.5 w-3.5" /></Button></Tooltip>
           {(current.status === "running" || current.status === "queued" || current.status === "waiting_on_you") && <Tooltip label="Cancel task" side="bottom"><Button size="icon" variant="danger" loading={action.isPending} onClick={() => runAction("cancel")} aria-label="Cancel task"><CircleStop className="h-3.5 w-3.5" /></Button></Tooltip>}
@@ -183,7 +186,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
       <div className={cn("mt-2 min-h-0 flex-1 gap-2", canvasOpen && "xl:grid xl:grid-cols-[minmax(28rem,0.92fr)_minmax(30rem,1.08fr)]")}>
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
           {availableViews.length > 1 && <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{availableViews.map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>}
-          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame>{current.runtime_mode === "interactive" ? <LiveTerminal taskId={taskId} /> : <TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} />}</TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
+          <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame>{current.runtime_mode === "interactive" ? <LiveTerminal key={interactiveInvocationId ?? taskId} taskId={taskId} /> : <TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} />}</TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
           {view === "terminal" && current.runtime_mode === "structured" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
         </section>
         <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
@@ -429,7 +432,7 @@ function TaskMobileActions({
           <p className="mt-2 text-xs text-slate-600">{backendLabel(task.backend)} · {task.model || "Runtime default"}</p>
         </div>
         <div className="grid gap-2">
-          {task.status === "waiting_on_you" && <Button variant="primary" loading={busy} onClick={() => onAction("complete")}><CheckCircle2 className="h-4 w-4" /> Mark conversation complete</Button>}
+          {(task.status === "waiting_on_you" || (task.runtime_mode === "interactive" && task.status === "running")) && <Button variant="primary" loading={busy} onClick={() => onAction("complete")}><CheckCircle2 className="h-4 w-4" /> Mark conversation complete</Button>}
           {task.status === "failed" && <Button variant="primary" loading={busy} onClick={() => onAction("retry-now")}><RefreshCcw className="h-4 w-4" /> Retry now</Button>}
           <Button loading={busy} onClick={() => onAction("restart")}><RotateCcw className="h-4 w-4" /> Restart from beginning</Button>
           {(task.status === "running" || task.status === "queued" || task.status === "waiting_on_you") && <Button variant="danger" loading={busy} onClick={() => onAction("cancel")}><CircleStop className="h-4 w-4" /> Cancel task</Button>}

@@ -13,6 +13,8 @@ from app.config import settings
 from app.services.process_manager import terminal_manager
 
 router = APIRouter()
+_MAX_INPUT_BYTES = 64 * 1024
+_MAX_INPUT_BASE64_CHARS = 4 * ((_MAX_INPUT_BYTES + 2) // 3)
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -33,6 +35,9 @@ async def _send_events(websocket: WebSocket, queue: asyncio.Queue[dict]) -> None
         if event.get("type") == "error" and event.get("code") == "slow_client":
             await websocket.close(code=1013)
             return
+        if event.get("type") == "exit":
+            await websocket.close(code=1000)
+            return
 
 
 @router.websocket("/ws/tasks/{task_id}/terminal")
@@ -52,7 +57,7 @@ async def task_terminal_socket(websocket: WebSocket, task_id: uuid.UUID) -> None
     sender: asyncio.Task | None = None
     try:
         first = await asyncio.wait_for(websocket.receive_json(), timeout=10)
-        if first.get("type") != "attach":
+        if not isinstance(first, dict) or first.get("type") != "attach":
             await websocket.send_json(
                 {"type": "error", "code": "attach_required", "message": "First frame must attach"}
             )
@@ -75,16 +80,32 @@ async def task_terminal_socket(websocket: WebSocket, task_id: uuid.UUID) -> None
 
         while True:
             frame = await websocket.receive_json()
+            if not isinstance(frame, dict):
+                await websocket.send_json(
+                    {"type": "error", "code": "invalid_frame", "message": "Frame must be an object"}
+                )
+                continue
             frame_type = frame.get("type")
             if frame_type == "input":
+                encoded = frame.get("data_b64", "")
+                if not isinstance(encoded, str):
+                    await websocket.send_json(
+                        {"type": "error", "code": "invalid_input", "message": "Invalid base64 input"}
+                    )
+                    continue
+                if len(encoded) > _MAX_INPUT_BASE64_CHARS:
+                    await websocket.send_json(
+                        {"type": "error", "code": "input_too_large", "message": "Input exceeds 64 KiB"}
+                    )
+                    continue
                 try:
-                    data = base64.b64decode(frame.get("data_b64", ""), validate=True)
+                    data = base64.b64decode(encoded, validate=True)
                 except (binascii.Error, ValueError):
                     await websocket.send_json(
                         {"type": "error", "code": "invalid_input", "message": "Invalid base64 input"}
                     )
                     continue
-                if len(data) > 64 * 1024:
+                if len(data) > _MAX_INPUT_BYTES:
                     await websocket.send_json(
                         {"type": "error", "code": "input_too_large", "message": "Input exceeds 64 KiB"}
                     )
@@ -96,12 +117,17 @@ async def task_terminal_socket(websocket: WebSocket, task_id: uuid.UUID) -> None
                         {"type": "error", "code": "read_only", "message": str(exc)}
                     )
             elif frame_type == "resize":
-                await terminal_manager.resize(
-                    task_id,
-                    client_id,
-                    _bounded_int(frame.get("cols"), 120, 20, 500),
-                    _bounded_int(frame.get("rows"), 32, 5, 200),
-                )
+                try:
+                    await terminal_manager.resize(
+                        task_id,
+                        client_id,
+                        _bounded_int(frame.get("cols"), 120, 20, 500),
+                        _bounded_int(frame.get("rows"), 32, 5, 200),
+                    )
+                except KeyError as exc:
+                    await websocket.send_json(
+                        {"type": "error", "code": "session_unavailable", "message": str(exc)}
+                    )
             elif frame_type == "take_control":
                 try:
                     await terminal_manager.take_control(task_id, client_id)
@@ -115,7 +141,7 @@ async def task_terminal_socket(websocket: WebSocket, task_id: uuid.UUID) -> None
                 await websocket.send_json(
                     {"type": "error", "code": "unknown_frame", "message": "Unknown terminal frame"}
                 )
-    except (WebSocketDisconnect, asyncio.TimeoutError):
+    except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
         pass
     finally:
         if sender is not None:

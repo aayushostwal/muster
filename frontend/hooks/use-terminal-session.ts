@@ -71,8 +71,10 @@ export function useTerminalSession(
         try {
           const event = JSON.parse(message.data as string) as TerminalEvent;
           if (event.type === "ready") {
+            exitedRef.current = false;
             controlRef.current = event.control;
             setControl(event.control);
+            setExit(null);
             setError(null);
           } else if (event.type === "output") {
             lastSeqRef.current = Math.max(lastSeqRef.current, event.seq);
@@ -87,6 +89,7 @@ export function useTerminalSession(
           } else if (event.type === "exit") {
             controlRef.current = "read_only";
             setControl("read_only");
+            setConnection("offline");
             if (event.status === "queued") {
               lastSeqRef.current = 0;
               handlersRef.current.onGap();
@@ -103,10 +106,15 @@ export function useTerminalSession(
         }
       };
       socket.onerror = () => socket.close();
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (socketRef.current === socket) socketRef.current = null;
-        if (disposedRef.current || exitedRef.current) return;
+        if (disposedRef.current) return;
         setConnection("offline");
+        if (exitedRef.current) return;
+        if (event.code === 1008) {
+          setError("Interactive terminal access was rejected by the backend");
+          return;
+        }
         const delay = Math.min(1_000 * 2 ** reconnectRef.current, 15_000);
         reconnectRef.current += 1;
         timer = window.setTimeout(connect, delay);

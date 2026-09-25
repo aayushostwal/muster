@@ -136,55 +136,67 @@ class TerminalManager:
             await db.commit()
             await db.refresh(invocation)
 
-        terminal_dir = settings.terminals_dir / str(task_id)
-        terminal_dir.mkdir(parents=True, exist_ok=True)
-        terminal_dir.chmod(0o700)
-        log_path = terminal_dir / f"{invocation.id}.ttylog"
-        log_file = log_path.open("ab", buffering=0)
-        log_path.chmod(0o600)
-        running = RunningTerminal(
-            task_id=task_id,
-            invocation_id=invocation.id,
-            session_key=str(uuid.uuid4()),
-            log_path=log_path,
-            log_file=log_file,
-            temp_paths=_command_temp_paths(command.argv),
-        )
-
-        async def on_output(data: bytes) -> None:
-            await self._on_output(running, data)
-
-        async def on_exit(exit_code: int) -> None:
-            await self._on_exit(running, exit_code)
-
-        runtime_env = {**os.environ, **secrets}
-        if task.backend == AgentBackend.codex:
-            codex_home = create_codex_home_overlay(bindings.tool_rules)
-            if codex_home is not None:
-                runtime_env["CODEX_HOME"] = str(codex_home)
-                running.temp_paths = (*running.temp_paths, codex_home)
-
-        session = TerminalSession(
-            command.argv,
-            cwd=bindings.primary_directory,
-            env=runtime_env,
-            on_output=on_output,
-            on_exit=on_exit,
-        )
-        running.session = session
-        self._running[task_id] = running
-        await broadcast(
-            task_id,
-            {"type": "status", "status": TaskStatus.running.value, "attention_reason": None},
-        )
-        await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
+        running: RunningTerminal | None = None
         try:
+            terminal_dir = settings.terminals_dir / str(task_id)
+            terminal_dir.mkdir(parents=True, exist_ok=True)
+            terminal_dir.chmod(0o700)
+            log_path = terminal_dir / f"{invocation.id}.ttylog"
+            log_file = log_path.open("ab", buffering=0)
+            log_path.chmod(0o600)
+            running = RunningTerminal(
+                task_id=task_id,
+                invocation_id=invocation.id,
+                session_key=str(uuid.uuid4()),
+                log_path=log_path,
+                log_file=log_file,
+                temp_paths=_command_temp_paths(command.argv),
+            )
+
+            async def on_output(data: bytes) -> None:
+                await self._on_output(running, data)
+
+            async def on_exit(exit_code: int) -> None:
+                await self._on_exit(running, exit_code)
+
+            runtime_env = {**os.environ, **secrets}
+            if task.backend == AgentBackend.codex:
+                codex_home = create_codex_home_overlay(
+                    bindings.tool_rules,
+                    settings.backend_sessions_dir / str(task_id) / AgentBackend.codex.value,
+                )
+                runtime_env["CODEX_HOME"] = str(codex_home)
+
+            session = TerminalSession(
+                command.argv,
+                cwd=bindings.primary_directory,
+                env=runtime_env,
+                on_output=on_output,
+                on_exit=on_exit,
+            )
+            running.session = session
+            self._running[task_id] = running
+            await broadcast(
+                task_id,
+                {"type": "status", "status": TaskStatus.running.value, "attention_reason": None},
+            )
+            await broadcast(
+                task_id,
+                {"type": "invocation", "invocation": _serialize_invocation(invocation)},
+            )
             await session.start()
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - any runtime setup failure must finalize the task
             self._running.pop(task_id, None)
-            log_file.close()
-            _cleanup_temp_paths(running.temp_paths)
-            await self._mark_start_failed(running, f"Unable to start interactive terminal: {exc}")
+            if running is not None:
+                running.log_file.close()
+                _cleanup_temp_paths(running.temp_paths)
+            else:
+                _cleanup_temp_paths(_command_temp_paths(command.argv))
+            await self._mark_start_failed(
+                task_id,
+                invocation.id,
+                f"Unable to start interactive terminal: {exc}",
+            )
 
     async def _on_output(self, running: RunningTerminal, data: bytes) -> None:
         if not data:
@@ -219,7 +231,11 @@ class TerminalManager:
         self, task_id: uuid.UUID, *, cols: int, rows: int, after_seq: int = 0
     ) -> tuple[str, asyncio.Queue[dict]]:
         client_id = str(uuid.uuid4())
-        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=settings.terminal_client_queue_frames)
+        # attach() queues ready + gap + replay before the sender task starts;
+        # never allow a small/invalid config value to deadlock that handshake.
+        queue: asyncio.Queue[dict] = asyncio.Queue(
+            maxsize=max(4, settings.terminal_client_queue_frames)
+        )
         running = self._running.get(task_id)
         if running is None:
             await self._enqueue_archive(task_id, queue)
@@ -240,9 +256,15 @@ class TerminalManager:
                 "latest_seq": latest,
             }
         )
-        if after_seq and after_seq < oldest - 1:
+        replay_after = after_seq
+        if after_seq > latest:
+            # The browser was attached to an older invocation whose sequence
+            # space no longer applies. Reset and send this session's replay.
             await queue.put({"type": "gap", "oldest_seq": oldest})
-        replay = [(seq, data) for seq, data in running.replay if seq > after_seq]
+            replay_after = 0
+        elif after_seq and after_seq < oldest - 1:
+            await queue.put({"type": "gap", "oldest_seq": oldest})
+        replay = [(seq, data) for seq, data in running.replay if seq > replay_after]
         if replay:
             await queue.put(
                 {
@@ -330,12 +352,14 @@ class TerminalManager:
             await running.session.resize(cols, rows)
 
     async def resume(self, task_id: uuid.UUID) -> None:
-        prompt = await self._structured._latest_user_prompt(task_id)
-        running = self._running.get(task_id)
-        if running is not None and running.session is not None and prompt:
-            await running.session.write(prompt.encode("utf-8") + b"\r")
-            return
-        await self.trigger(task_id, prompt=prompt)
+        async with self._lock_for(task_id):
+            prompt = await self._structured._latest_user_prompt(task_id)
+            running = self._running.get(task_id)
+            if running is not None and running.session is not None and prompt:
+                await running.session.write(prompt.encode("utf-8") + b"\r")
+                return
+            if running is None:
+                await self._spawn(task_id, prompt)
 
     async def cancel(self, task_id: uuid.UUID) -> None:
         await self._finish(task_id, TaskStatus.cancelled)
@@ -344,65 +368,73 @@ class TerminalManager:
         await self._finish(task_id, TaskStatus.done)
 
     async def _finish(self, task_id: uuid.UUID, status: TaskStatus) -> None:
-        running = self._running.get(task_id)
-        if running is None:
+        async with self._lock_for(task_id):
+            running = self._running.get(task_id)
+            if running is None:
+                await self._set_status(task_id, status, completed=True)
+                return
+            running.final_status = status
+            if running.session is not None:
+                await running.session.terminate()
+                await running.session.wait()
+            # If the process had already begun its natural-exit callback when
+            # the click arrived, that callback may have classified it first.
+            # Reassert the explicit user action before returning the API call.
             await self._set_status(task_id, status, completed=True)
-            return
-        running.final_status = status
-        if running.session is not None:
-            await running.session.terminate()
-            await running.session.wait()
 
     async def restart_from_beginning(self, task_id: uuid.UUID) -> None:
-        running = self._running.get(task_id)
-        if running is not None:
-            running.restarting = True
-            if running.session is not None:
-                await running.session.terminate()
-                await running.session.wait()
-        async with SessionLocal() as db:
-            task = await db.get(Task, task_id)
-            if task is None:
-                return
-            task.status = TaskStatus.queued
-            task.attention_reason = None
-            task.completed_at = None
-            task.session_id = None
-            await db.commit()
-        await self.trigger(task_id)
+        async with self._lock_for(task_id):
+            running = self._running.get(task_id)
+            if running is not None:
+                running.restarting = True
+                if running.session is not None:
+                    await running.session.terminate()
+                    await running.session.wait()
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None:
+                    return
+                task.status = TaskStatus.queued
+                task.attention_reason = None
+                task.completed_at = None
+                task.session_id = None
+                await db.commit()
+            await self._spawn(task_id)
 
     async def retry_now(self, task_id: uuid.UUID) -> None:
-        async with SessionLocal() as db:
-            task = await db.get(Task, task_id)
-            if task is None or task.status != TaskStatus.failed:
-                return
-            task.status = TaskStatus.queued
-            task.completed_at = None
-            task.attention_reason = None
-            await db.commit()
-        await self.trigger(task_id)
+        async with self._lock_for(task_id):
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None or task.status != TaskStatus.failed:
+                    return
+                task.status = TaskStatus.queued
+                task.completed_at = None
+                task.attention_reason = None
+                await db.commit()
+            await self._spawn(task_id)
 
     async def switch_backend(self, task_id: uuid.UUID, backend: AgentBackend) -> None:
-        running = self._running.get(task_id)
-        if running is not None:
-            running.restarting = True
-            if running.session is not None:
-                await running.session.terminate()
-                await running.session.wait()
-        async with SessionLocal() as db:
-            task = await db.get(Task, task_id)
-            if task is None:
-                return
-            task.backend = backend
-            task.model = None
-            task.fallback_models = []
-            task.agent_id = None
-            task.session_id = None
-            task.status = TaskStatus.queued
-            task.attention_reason = None
-            task.completed_at = None
-            await db.commit()
-        await self.trigger(task_id)
+        async with self._lock_for(task_id):
+            running = self._running.get(task_id)
+            if running is not None:
+                running.restarting = True
+                if running.session is not None:
+                    await running.session.terminate()
+                    await running.session.wait()
+            async with SessionLocal() as db:
+                task = await db.get(Task, task_id)
+                if task is None:
+                    return
+                task.backend = backend
+                task.model = None
+                task.fallback_models = []
+                task.agent_id = None
+                task.session_id = None
+                task.status = TaskStatus.queued
+                task.attention_reason = None
+                task.completed_at = None
+                await db.commit()
+            await self._spawn(task_id)
 
     async def shutdown(self) -> None:
         running_sessions = list(self._running.values())
@@ -478,7 +510,9 @@ class TerminalManager:
             try:
                 client.queue.put_nowait(event)
             except asyncio.QueueFull:
-                pass
+                while not client.queue.empty():
+                    client.queue.get_nowait()
+                client.queue.put_nowait(event)
         self._running.pop(running.task_id, None)
         await broadcast(
             running.task_id,
@@ -490,22 +524,31 @@ class TerminalManager:
                 {"type": "invocation", "invocation": _serialize_invocation(invocation)},
             )
 
-    async def _mark_start_failed(self, running: RunningTerminal, message: str) -> None:
+    async def _mark_start_failed(
+        self, task_id: uuid.UUID, invocation_id: uuid.UUID, message: str
+    ) -> None:
         async with SessionLocal() as db:
-            task = await db.get(Task, running.task_id)
-            invocation = await db.get(TaskInvocation, running.invocation_id)
+            task = await db.get(Task, task_id)
+            invocation = await db.get(TaskInvocation, invocation_id)
             if task is not None:
                 task.status = TaskStatus.failed
                 task.completed_at = datetime.now(timezone.utc)
             if invocation is not None:
                 invocation.status = "failed"
                 invocation.completed_at = datetime.now(timezone.utc)
-            db.add(Message(task_id=running.task_id, sender=MessageSender.system, content_text=message))
+            db.add(Message(task_id=task_id, sender=MessageSender.system, content_text=message))
             await db.commit()
+            if invocation is not None:
+                await db.refresh(invocation)
         await broadcast(
-            running.task_id,
+            task_id,
             {"type": "status", "status": TaskStatus.failed.value, "attention_reason": None},
         )
+        if invocation is not None:
+            await broadcast(
+                task_id,
+                {"type": "invocation", "invocation": _serialize_invocation(invocation)},
+            )
 
     async def _fail_task(self, task_id: uuid.UUID, message: str) -> None:
         async with SessionLocal() as db:
@@ -525,6 +568,8 @@ class TerminalManager:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None:
+                return
+            if task.status in {TaskStatus.done, TaskStatus.cancelled}:
                 return
             task.status = status
             task.attention_reason = None

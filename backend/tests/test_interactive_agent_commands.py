@@ -43,6 +43,7 @@ def test_codex_interactive_command_uses_tui_not_exec(tmp_path):
 
     assert command.argv[0] == "codex"
     assert "exec" not in command.argv
+    assert command.argv[-2] == "--"
     assert command.argv[-1].endswith("fix the bug")
     assert command.stdin_payload is None
     assert "--ask-for-approval" in command.argv
@@ -60,4 +61,19 @@ def test_claude_interactive_command_omits_print_only_flags(tmp_path):
     assert "-p" not in command.argv
     assert "--output-format" not in command.argv
     assert "--permission-prompts" not in command.argv
+    assert command.argv[-2] == "--"
     assert command.argv[-1] == "fix the bug"
+
+
+def test_interactive_prompt_cannot_be_parsed_as_a_cli_option(tmp_path):
+    task = _task(AgentBackend.claude_code)
+    task.initial_prompt = "--help"
+
+    command = ClaudeCodeAdapter().build_interactive_command(
+        task,
+        _project(AgentBackend.claude_code),
+        _bindings(tmp_path),
+        {},
+    )
+
+    assert command.argv[-2:] == ["--", "--help"]

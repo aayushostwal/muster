@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import fcntl
+import logging
 import os
 import pty
 import signal
@@ -18,6 +19,9 @@ from collections.abc import Awaitable, Callable
 
 OutputCallback = Callable[[bytes], Awaitable[None]]
 ExitCallback = Callable[[int], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
+_OUTPUT_DRAIN_SECONDS = 0.25
 
 
 class TerminalSession:
@@ -69,6 +73,15 @@ class TerminalSession:
             "TERM": self.env.get("TERM", "xterm-256color"),
             "COLORTERM": self.env.get("COLORTERM", "truecolor"),
         }
+
+        def configure_child_terminal() -> None:
+            # Inheriting an already-open slave after setsid() is not enough to
+            # make it the controlling terminal. Native TUIs need a controlling
+            # TTY for job-control keys such as Ctrl-C/Ctrl-Z to reach the
+            # foreground process group.
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
         try:
             self.process = await asyncio.create_subprocess_exec(
                 *self.argv,
@@ -77,7 +90,7 @@ class TerminalSession:
                 stderr=slave_fd,
                 cwd=self.cwd,
                 env=runtime_env,
-                start_new_session=True,
+                preexec_fn=configure_child_terminal,
             )
         except BaseException:
             os.close(master_fd)
@@ -87,9 +100,18 @@ class TerminalSession:
             os.close(slave_fd)
 
         loop = asyncio.get_running_loop()
-        loop.add_reader(master_fd, self._read_ready)
-        self._pump_task = asyncio.create_task(self._pump_output())
-        self._wait_task = asyncio.create_task(self._wait_for_exit())
+        try:
+            loop.add_reader(master_fd, self._read_ready)
+            self._pump_task = asyncio.create_task(self._pump_output())
+            self._wait_task = asyncio.create_task(self._wait_for_exit())
+        except BaseException:
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await self.process.wait()
+            self.close_fd()
+            raise
 
     def _read_ready(self) -> None:
         fd = self.master_fd
@@ -123,12 +145,23 @@ class TerminalSession:
     async def _wait_for_exit(self) -> None:
         assert self.process is not None
         exit_code = await self.process.wait()
-        self._stop_reader()
-        self._output_queue.put_nowait(None)
-        if self._pump_task is not None:
-            await self._pump_task
-        await self.on_exit(exit_code)
-        self.close_fd()
+        try:
+            if self._pump_task is not None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(self._pump_task), timeout=_OUTPUT_DRAIN_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    # A descendant can inherit the slave PTY after the main
+                    # process exits. Bound the drain so shutdown cannot hang.
+                    self._stop_reader()
+                    self._output_queue.put_nowait(None)
+                    await self._pump_task
+                except Exception:  # noqa: BLE001 - callback failure must not skip exit handling
+                    logger.exception("terminal output callback failed")
+            await self.on_exit(exit_code)
+        finally:
+            self.close_fd()
 
     async def write(self, data: bytes) -> None:
         if not data or self.master_fd is None or self.returncode is not None:

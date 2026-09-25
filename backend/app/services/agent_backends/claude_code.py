@@ -195,7 +195,7 @@ class ClaudeCodeAdapter:
     ) -> BackendCommand:
         cmd = [settings.claude_code_bin]
         cmd += self._base_flags(task, project, bindings, secrets, interactive=True)
-        cmd.append(prompt or task.initial_prompt)
+        cmd += ["--", prompt or task.initial_prompt]
         return BackendCommand(argv=cmd)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
