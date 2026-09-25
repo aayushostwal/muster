@@ -180,6 +180,7 @@ assert_file "$MAC_HOME/.muster/app/docker-compose.yml"
 assert_file "$MAC_HOME/.muster/muster.env"
 assert_file "$MAC_HOME/Library/LaunchAgents/com.muster.backend.plist"
 assert_file "$MAC_HOME/bin/musterctl"
+assert_file "$MAC_HOME/bin/muster-mcp"
 assert_mode_600 "$MAC_HOME/.muster/muster.env"
 assert_mode_600 "$MAC_HOME/Library/LaunchAgents/com.muster.backend.plist"
 [ ! -e "$MAC_HOME/.muster/docker-compose.yml" ]
@@ -215,6 +216,14 @@ assert_contains "$CALL_LOG" "git|clone|"
 assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_BACKEND_PORT=8181"
 assert_contains "$MAC_HOME/.muster/muster.env" "MUSTER_POSTGRES_PASSWORD=p&<>\$x"
 
+# Upgrade refreshes both installed wrappers, including installations that
+# predate muster-mcp.
+rm "$MAC_HOME/bin/muster-mcp"
+env HOME="$MAC_HOME" PATH="$FAKE_BIN:$MAC_HOME/bin:$PATH" FAKE_UNAME_S=Darwin \
+  MUSTER_HOME="$MAC_HOME/.muster" "$MAC_HOME/bin/musterctl" upgrade >/dev/null
+assert_file "$MAC_HOME/bin/musterctl"
+assert_file "$MAC_HOME/bin/muster-mcp"
+
 LINUX_HOME="$TEST_ROOT/linux home"
 run_install Linux "$LINUX_HOME" 8282 3200 56432 'p"word%\tail'
 UNIT="$LINUX_HOME/.config/systemd/user/muster.service"
@@ -238,6 +247,7 @@ if run_install Darwin "$FAILED_HOME" 8484 3400 58432 "failed-password" "" 42; th
   exit 1
 fi
 assert_file "$FAILED_HOME/bin/musterctl"
+assert_file "$FAILED_HOME/bin/muster-mcp"
 [ ! -e "$FAILED_HOME/Library/LaunchAgents/com.muster.backend.plist" ]
 
 # A host with only Apple's Python 3.9 must get an isolated managed runtime

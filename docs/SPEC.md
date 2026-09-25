@@ -10,7 +10,7 @@ this file. PRD reference: see the "Muster — PRD" doc content summarized below.
 ```
 backend/        FastAPI app (native host process in prod; runs in a venv)
 frontend/       Next.js App Router + TypeScript + Tailwind application
-cli/            musterctl (bash script wrapping docker compose + service mgmt)
+cli/            musterctl service CLI + muster-mcp stdio entrypoint
 scripts/        install.sh, launchd plist template, systemd unit template
 docker-compose.yml   Postgres + frontend only (backend runs natively)
 ```
@@ -613,12 +613,20 @@ State: React Query for server state, no global state library needed.
 See `docs/OPERATIONS.md` for the full `musterctl` command table and
 install/upgrade/uninstall flow — implemented by `scripts/install.sh`,
 `scripts/launchd/*.plist.template`, `scripts/systemd/*.service.template`,
-and `cli/musterctl`.
+and the wrappers in `cli/`.
+
+The installer places both `musterctl` and `muster-mcp` in the selected binary
+directory. `muster-mcp` starts `backend/app/mcp_server.py` from the managed
+virtualenv and reserves stdout for JSON-RPC. The MCP server is an adapter over
+the loopback REST API, not a second persistence or process-management layer.
+It exposes project discovery plus task create/list/get/message/cancel/complete;
+therefore REST validation and process-manager lifecycle rules remain the
+canonical contract for MCP-created tasks too.
 
 Pragmatic simplification vs. the PRD's "single compiled binary": the backend
 is Python/FastAPI, so the "native service" is `uvicorn` running inside a
 dedicated venv at `~/.muster/venv`, supervised by launchd/systemd — not a
-cross-compiled Go/Rust binary. `musterctl` itself is a POSIX shell script
-installed to `/usr/local/bin/musterctl` (or `~/.local/bin` if unwritable).
+cross-compiled Go/Rust binary. The command wrappers are POSIX shell scripts
+installed to `/usr/local/bin` (or `~/.local/bin` if unwritable).
 This keeps install correctness high without a cross-platform binary release
 pipeline; documented explicitly, not silently substituted.

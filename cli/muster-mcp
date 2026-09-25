@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# stdout belongs exclusively to the MCP protocol. Diagnostics must go to
+# stderr or the host will reject the stdio connection.
+MUSTER_HOME="${MUSTER_HOME:-$HOME/.muster}"
+APP_DIR="$MUSTER_HOME/app"
+VENV_DIR="$MUSTER_HOME/venv"
+ENV_FILE="$MUSTER_HOME/muster.env"
+
+installed_value() {
+  local key="$1"
+  [ -f "$ENV_FILE" ] || return 0
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+BACKEND_PORT="${MUSTER_BACKEND_PORT:-$(installed_value MUSTER_BACKEND_PORT)}"
+BACKEND_PORT="${BACKEND_PORT:-8080}"
+export MUSTER_BACKEND_PORT="$BACKEND_PORT"
+export MUSTER_API_URL="${MUSTER_API_URL:-http://127.0.0.1:${BACKEND_PORT}}"
+
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+  printf 'muster-mcp: managed Python not found at %s\n' "$VENV_DIR/bin/python" >&2
+  exit 1
+fi
+if [ ! -f "$APP_DIR/backend/app/mcp_server.py" ]; then
+  printf 'muster-mcp: server module not found under %s\n' "$APP_DIR/backend" >&2
+  exit 1
+fi
+
+cd "$APP_DIR/backend"
+exec "$VENV_DIR/bin/python" -m app.mcp_server

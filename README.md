@@ -38,6 +38,22 @@ service. See the [`Muster CLI guide`](docs/CLI.md) for every `musterctl` command
 and example, or [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for installation and
 service internals.
 
+### Connect Codex or Claude Code over MCP
+
+The installer also adds `muster-mcp`, a local stdio MCP server. Register it
+once with either client while Muster is running:
+
+```bash
+codex mcp add muster -- "$(command -v muster-mcp)"
+claude mcp add --scope user muster -- "$(command -v muster-mcp)"
+```
+
+The connected client can list Muster projects, create a task by exact project
+name or ID, inspect tasks, send follow-up messages, cancel work, and complete a
+reviewed task. Creating the task uses that project's configured working
+directory, capabilities, runtime, and model defaults and starts the selected
+Codex or Claude Code agent immediately.
+
 ### Local dev
 
 ```bash
@@ -117,7 +133,7 @@ the Next.js development server on port 5173, run `make up` rather than
 | --- | --- | --- |
 | `backend/` | FastAPI + async SQLAlchemy + Postgres service. Owns the data model, the REST/WebSocket API, the process manager that spawns and streams the `claude`/`codex` CLIs, failure classification and retry, context compression, and the cron scheduler. | [`backend/README.md`](backend/README.md) |
 | `frontend/` | Next.js App Router + TypeScript + Tailwind command center. Global registries → Project access controls → Kanban task board → compact live execution console, driven by TanStack Query and per-task WebSockets. | [`frontend/README.md`](frontend/README.md) |
-| `cli/` | `musterctl` — the single command covering install, start/stop/restart, status, logs, upgrade, uninstall, database backup/restore, config, and a `doctor` healthcheck, across both launchd and systemd. | [`cli/README.md`](cli/README.md) |
+| `cli/` | `musterctl` manages the installed stack; `muster-mcp` exposes project-aware task operations to local MCP clients over stdio. | [`cli/README.md`](cli/README.md) |
 | `scripts/` | `install.sh` and the launchd/systemd service templates it substitutes at install time — the one-shot path from a bare machine to a running Muster instance. | [`scripts/README.md`](scripts/README.md) |
 | `docs/` | User-facing CLI workflows, installation/operations details, and the API/WebSocket/process-manager contract. | [`docs/CLI.md`](docs/CLI.md) · [`docs/OPERATIONS.md`](docs/OPERATIONS.md) · [`docs/SPEC.md`](docs/SPEC.md) |
 
