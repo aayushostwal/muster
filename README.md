@@ -11,6 +11,10 @@ frontend run in Docker; the backend runs natively on your host so agent
 processes get direct filesystem access to whatever you bind, with no
 container mounts and no redeploy to add a new directory.
 
+Manual tasks can also run the native Codex or Claude Code terminal UI directly
+inside Muster. The opt-in interactive mode uses a host PTY and xterm.js while
+scheduled and unattended work keeps the structured JSON runner.
+
 ## Connect
 
 <p align="center">
@@ -67,6 +71,9 @@ the Next.js development server on port 5173, run `make up` rather than
 
 - Create a Task with a prompt, and the configured agent (Claude Code or
   Codex) starts on it immediately — no manual "run" step, ever.
+- Attach to the real Codex or Claude Code TUI in the task page, including
+  native keyboard controls and permission prompts; refreshing the browser
+  reconnects to the same host PTY.
 - Dispatch a Task from any screen with the compact global composer: type `@`
   to choose exactly one Project, add the brief, and send without leaving the
   current context.
@@ -120,7 +127,7 @@ the Next.js development server on port 5173, run `make up` rather than
 | --- | --- |
 | **Project** | A workspace with explicit directory grants, per-capability overrides, artifacts, schedules, secrets, and default runtime settings. |
 | **Global capability** | A reusable directory, MCP connector, agent profile, skill, or tool policy. MCP/agent/skill/tool resources are available to projects by default; directories require an explicit grant. |
-| **Task** | The unit of agent work inside a Project — prompt, runtime, ordered model chain, thinking level, context strategy, and its own Chat. |
+| **Task** | The unit of agent work inside a Project — prompt, backend, structured or interactive runtime mode, ordered model chain, thinking level, and context strategy. |
 | **Chat** | The ordered Messages tied to a Task — user, agent, and system senders, with a blocking-question flag for the human-in-the-loop flow. |
 | **Invocation** | One Claude or Codex process run, including native session id, selected model, status, and input/output/cache token counts. |
 | **Task event** | A structured, collapsible tool call, diff, reasoning block, runtime log, or delegated-agent event. |
@@ -140,7 +147,7 @@ interval logged inline as a system message.
 | --- | --- |
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, APScheduler |
 | Database | PostgreSQL 16 — chosen for safe concurrent writes across simultaneous Task runs |
-| Frontend | Next.js App Router, React, TypeScript, Tailwind CSS, Framer Motion, TanStack Query |
+| Frontend | Next.js App Router, React, TypeScript, Tailwind CSS, Framer Motion, TanStack Query, xterm.js |
 | Agent backends | `claude` (Claude Code CLI, headless `stream-json` mode) and `codex` (Codex CLI, `exec --json` mode) |
 | Deployment | Docker Compose for Postgres + frontend; the backend runs natively on the host as a launchd agent (macOS) or systemd `--user` unit (Linux) |
 

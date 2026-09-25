@@ -123,6 +123,17 @@ class AgentBackendAdapter(Protocol):
         """Build the argv to continue a task, given its backend session id."""
         ...
 
+    def build_interactive_command(
+        self,
+        task: Task,
+        project: Project,
+        bindings: "AdapterBindings",
+        secrets: dict[str, str],
+        prompt: str | None = None,
+    ) -> BackendCommand:
+        """Build an argv for the backend's native interactive terminal UI."""
+        ...
+
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         """Parse one line of the backend's stdout stream into a ParsedEvent."""
         ...

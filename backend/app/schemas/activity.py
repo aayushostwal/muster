@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.db.models import AgentBackend
+from app.db.models import AgentBackend, RuntimeMode
 
 
 class TaskInvocationRead(BaseModel):
@@ -14,6 +14,7 @@ class TaskInvocationRead(BaseModel):
     task_id: uuid.UUID
     sequence: int
     backend: AgentBackend
+    runtime_mode: RuntimeMode
     session_id: str | None
     model: str | None
     thinking_level: str | None

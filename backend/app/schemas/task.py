@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.db.models import AgentBackend, TaskStatus
+from app.db.models import AgentBackend, RuntimeMode, TaskStatus
 
 
 class TaskTagsMixin(BaseModel):
@@ -38,6 +38,7 @@ class TaskCreate(TaskTagsMixin):
     agent_id: uuid.UUID | None = None
     context_strategy: str | None = None
     media: list = Field(default_factory=list)
+    runtime_mode: RuntimeMode | None = None
 
 
 class TaskModelUpdate(BaseModel):
@@ -74,6 +75,7 @@ class TaskRead(BaseModel):
     status: TaskStatus
     attention_reason: str | None
     backend: AgentBackend
+    runtime_mode: RuntimeMode
     model: str | None
     fallback_models: list[str]
     tags: list[str]

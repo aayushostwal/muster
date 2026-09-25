@@ -86,22 +86,23 @@ class ClaudeCodeAdapter:
         project: Project,
         bindings: AdapterBindings,
         secrets: dict[str, str],
+        *,
+        interactive: bool = False,
     ) -> list[str]:
-        flags: list[str] = [
-            "--output-format",
-            "stream-json",
-            # The CLI requires --verbose whenever --print is combined with
-            # --output-format stream-json (confirmed against the real `claude`
-            # binary: "Error: When using --print, --output-format=stream-json
-            # requires --verbose").
-            "--verbose",
-            "--permission-mode",
-            "acceptEdits",
-            "--permission-prompts",
-            "none",
-            "--include-hook-events",
-            "--forward-subagent-text",
-        ]
+        flags: list[str] = ["--permission-mode", "acceptEdits"]
+        if not interactive:
+            flags = [
+                "--output-format",
+                "stream-json",
+                # The CLI requires --verbose whenever --print is combined with
+                # --output-format stream-json.
+                "--verbose",
+                *flags,
+                "--permission-prompts",
+                "none",
+                "--include-hook-events",
+                "--forward-subagent-text",
+            ]
         for directory in bindings.directories:
             flags += ["--add-dir", directory]
 
@@ -182,6 +183,19 @@ class ClaudeCodeAdapter:
     ) -> BackendCommand:
         cmd = [settings.claude_code_bin, "--resume", session_id, "-p", prompt]
         cmd += self._base_flags(task, project, bindings, secrets)
+        return BackendCommand(argv=cmd)
+
+    def build_interactive_command(
+        self,
+        task: Task,
+        project: Project,
+        bindings: AdapterBindings,
+        secrets: dict[str, str],
+        prompt: str | None = None,
+    ) -> BackendCommand:
+        cmd = [settings.claude_code_bin]
+        cmd += self._base_flags(task, project, bindings, secrets, interactive=True)
+        cmd += ["--", prompt or task.initial_prompt]
         return BackendCommand(argv=cmd)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:

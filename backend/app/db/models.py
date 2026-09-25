@@ -41,6 +41,11 @@ class TaskStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class RuntimeMode(str, enum.Enum):
+    structured = "structured"
+    interactive = "interactive"
+
+
 class MessageSender(str, enum.Enum):
     user = "user"
     agent = "agent"
@@ -228,6 +233,9 @@ class Task(Base):
     # ProcessManager._on_process_exit). Cleared (None) on every other status.
     attention_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    runtime_mode: Mapped[RuntimeMode] = mapped_column(
+        String(20), default=RuntimeMode.structured, server_default=RuntimeMode.structured.value
+    )
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     fallback_models: Mapped[list] = mapped_column(JSON, default=list)
     tags: Mapped[list] = mapped_column(JSON, default=list)
@@ -415,6 +423,9 @@ class TaskInvocation(Base):
     task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    runtime_mode: Mapped[RuntimeMode] = mapped_column(
+        String(20), default=RuntimeMode.structured, server_default=RuntimeMode.structured.value
+    )
     session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     thinking_level: Mapped[str | None] = mapped_column(String(20), nullable=True)

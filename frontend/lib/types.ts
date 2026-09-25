@@ -1,4 +1,5 @@
 export type AgentBackend = "claude_code" | "codex";
+export type RuntimeMode = "structured" | "interactive";
 export type TaskStatus =
   | "queued"
   | "running"
@@ -64,6 +65,7 @@ export interface Task {
   /** Only meaningful while status === "waiting_on_you". */
   attention_reason: "blocking_question" | "tool_permission" | "awaiting_review" | null;
   backend: AgentBackend;
+  runtime_mode: RuntimeMode;
   model: string | null;
   fallback_models: string[];
   tags: string[];
@@ -312,6 +314,7 @@ export interface TaskInvocation {
   task_id: string;
   sequence: number;
   backend: AgentBackend;
+  runtime_mode: RuntimeMode;
   session_id: string | null;
   model: string | null;
   thinking_level: string | null;

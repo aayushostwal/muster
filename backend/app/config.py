@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -44,6 +45,19 @@ class Settings(BaseSettings):
     runtime_watchdog_interval_seconds: float = 5
     runtime_stream_limit_bytes: int = 8 * 1024 * 1024
 
+    # Interactive PTY terminals are opt-in until the local-only security and
+    # lifecycle path has been validated on the host. Existing/cron tasks keep
+    # using the structured runner regardless of this default.
+    interactive_terminal_enabled: bool = False
+    default_task_runtime_mode: Literal["structured", "interactive"] = "structured"
+    terminal_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
+    terminal_replay_bytes: int = 2 * 1024 * 1024
+    terminal_client_queue_frames: int = 256
+
+    @property
+    def terminal_allowed_origin_set(self) -> set[str]:
+        return {origin.strip() for origin in self.terminal_allowed_origins.split(",") if origin.strip()}
+
     @property
     def database_url(self) -> str:
         return (
@@ -63,12 +77,17 @@ class Settings(BaseSettings):
     def backend_sessions_dir(self) -> Path:
         return self.data_dir / "backend-sessions"
 
+    @property
+    def terminals_dir(self) -> Path:
+        return self.data_dir / "terminals"
+
     def ensure_dirs(self) -> None:
         for d in (
             self.data_dir,
             self.transcripts_dir,
             self.media_dir,
             self.backend_sessions_dir,
+            self.terminals_dir,
             self.secret_key_file.parent,
         ):
             d.mkdir(parents=True, exist_ok=True)

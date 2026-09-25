@@ -54,6 +54,12 @@
     <string>__PG_PASSWORD__</string>
     <key>MUSTER_POSTGRES_DB</key>
     <string>__PG_DB__</string>
+    <key>MUSTER_INTERACTIVE_TERMINAL_ENABLED</key>
+    <string>__TERMINAL_ENABLED__</string>
+    <key>MUSTER_DEFAULT_TASK_RUNTIME_MODE</key>
+    <string>__DEFAULT_RUNTIME_MODE__</string>
+    <key>MUSTER_TERMINAL_ALLOWED_ORIGINS</key>
+    <string>__TERMINAL_ORIGINS__</string>
   </dict>
 
   <key>RunAtLoad</key>

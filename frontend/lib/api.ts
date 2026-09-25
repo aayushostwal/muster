@@ -1,5 +1,6 @@
 import type {
   AgentBackend,
+  RuntimeMode,
   Artifact,
   ContextSnapshot,
   Capability,
@@ -125,6 +126,7 @@ export const api = {
       tags?: string[];
       thinking_level?: string;
       agent_id?: string;
+      runtime_mode?: RuntimeMode;
     },
   ) => request<Task>(`/api/projects/${projectId}/tasks`, { method: "POST", ...json(body) }),
   deleteTask: (id: string) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
