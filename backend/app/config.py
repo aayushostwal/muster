@@ -59,8 +59,18 @@ class Settings(BaseSettings):
     def media_dir(self) -> Path:
         return self.data_dir / "media"
 
+    @property
+    def backend_sessions_dir(self) -> Path:
+        return self.data_dir / "backend-sessions"
+
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.transcripts_dir, self.media_dir, self.secret_key_file.parent):
+        for d in (
+            self.data_dir,
+            self.transcripts_dir,
+            self.media_dir,
+            self.backend_sessions_dir,
+            self.secret_key_file.parent,
+        ):
             d.mkdir(parents=True, exist_ok=True)
 
 

@@ -272,6 +272,9 @@ class Task(Base):
     pr_delivery_runs: Mapped[list["PrDeliveryRun"]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="PrDeliveryRun.created_at"
     )
+    backend_session: Mapped["TaskBackendSession | None"] = relationship(
+        back_populates="task", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class DirectoryResource(Base):
@@ -423,6 +426,26 @@ class TaskInvocation(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     task: Mapped[Task] = relationship(back_populates="invocations")
+
+
+class TaskBackendSession(Base):
+    """Durable backend resume state and its Muster-owned runtime directory."""
+
+    __tablename__ = "task_backend_sessions"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), unique=True
+    )
+    backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    storage_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    task: Mapped[Task] = relationship(back_populates="backend_session")
 
 
 class TaskEvent(Base):

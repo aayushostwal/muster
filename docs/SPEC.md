@@ -233,7 +233,8 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
    - parses each backend's streaming output into messages and structured
      `TaskEvent` rows, persists them, and broadcasts over the task's WebSocket;
    - stores the native Claude/Codex session id and token counters on the
-     invocation record;
+     invocation record, while `task_backend_sessions` keeps the durable
+     resume handle and its Muster-owned storage path;
    - detects a blocking question (see below) and flips status to
      `waiting_on_you`;
    - on clean exit, flips status to `waiting_on_you` with
@@ -310,9 +311,16 @@ def resume_command(self, task, project, bindings, secrets, session_id: str) -> B
   the complete prompt written to stdin, repeated `--add-dir` flags for the
   first turn, and `codex exec resume <session_id> - --json` for continued
   turns. Project command-prefix
-  permissions are rendered into a disposable `CODEX_HOME` rules overlay that
-  links the user's auth, config, and sessions, so Muster never edits global
-  Codex configuration.
+  permissions are rendered into a task-scoped `CODEX_HOME` under
+  `MUSTER_DATA_DIR/backend-sessions`. The path is persisted in
+  `task_backend_sessions` and reused on every turn; it links the user's auth,
+  config, and sessions, so Muster never edits global Codex configuration.
+  Older stale rollout paths are repaired to the matching file in the user's
+  real Codex sessions directory before resume.
+- PR create/update requests use a configured GitHub MCP connector and never
+  start interactive `gh auth login` inside a headless task. Without that
+  connector, the agent reports the missing project capability instead of
+  initiating a device-authorization flow.
 
 Both adapters are intentionally thin translation layers — if the installed
 CLI's actual flags differ from the above by version, `musterctl doctor`

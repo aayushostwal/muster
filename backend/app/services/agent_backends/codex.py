@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+import sqlite3
 from pathlib import Path
 
 from app.config import settings
@@ -19,6 +19,7 @@ from app.services.agent_backends.base import (
     PermissionRequest,
     SessionId,
     UsageEvent,
+    pull_request_guidance,
 )
 
 
@@ -50,6 +51,7 @@ class CodexAdapter:
                 "Available Muster sub-agent profiles. When delegating, use the matching role and "
                 f"include its instructions in the delegated task:\n{agents}"
             )
+        sections.append(pull_request_guidance(bindings))
         sections.append(prompt)
         return "\n\n---\n\n".join(sections)
 
@@ -230,31 +232,36 @@ class CodexAdapter:
         return ""
 
 
-def create_codex_home_overlay(tool_rules: list[dict]) -> Path | None:
-    """Layer project exec rules over the user's Codex state without mutating it."""
+def create_codex_home_overlay(tool_rules: list[dict], overlay: Path) -> Path:
+    """Layer project rules into a persistent, task-scoped Codex home."""
     codex_rules = [
         rule
         for rule in tool_rules
         if rule.get("backend") in {"all", "codex"} and rule.get("codex_prefix")
     ]
-    if not codex_rules:
-        return None
-
     source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-    overlay = Path(tempfile.mkdtemp(prefix="muster-codex-home-"))
+    overlay.mkdir(parents=True, exist_ok=True)
+    overlay.chmod(0o700)
     for source in source_home.iterdir() if source_home.exists() else ():
         if source.name == "rules":
             continue
-        (overlay / source.name).symlink_to(source, target_is_directory=source.is_dir())
+        destination = overlay / source.name
+        if not destination.exists() and not destination.is_symlink():
+            destination.symlink_to(source, target_is_directory=source.is_dir())
 
     rules_dir = overlay / "rules"
-    rules_dir.mkdir()
+    rules_dir.mkdir(exist_ok=True)
+    for existing in rules_dir.iterdir():
+        if existing.name == "muster.rules" or existing.name.startswith("user-"):
+            existing.unlink()
     source_rules = source_home / "rules"
     if source_rules.is_dir():
         for source in source_rules.glob("*.rules"):
             (rules_dir / f"user-{source.name}").symlink_to(source)
 
-    rendered = []
+    rendered = [
+        'prefix_rule(pattern=["gh", "auth", "login"], decision="forbidden")'
+    ]
     for rule in codex_rules:
         decision = "allow" if rule.get("decision") == "allow" else "forbidden"
         rendered.append(
@@ -262,3 +269,47 @@ def create_codex_home_overlay(tool_rules: list[dict]) -> Path | None:
         )
     (rules_dir / "muster.rules").write_text("\n".join(rendered) + "\n", encoding="utf-8")
     return overlay
+
+
+def repair_codex_rollout_path(session_id: str) -> bool:
+    """Repair rollout paths left behind by older temporary CODEX_HOME runs.
+
+    Codex keeps the authoritative absolute rollout path in ``state_5.sqlite``.
+    Older Muster versions deleted the temporary parent of that path even
+    though the same rollout remained available in the user's real sessions
+    directory. Repair only that exact thread row when this condition is met.
+    """
+    source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    state_db = source_home / "state_5.sqlite"
+    if not state_db.is_file():
+        return False
+
+    try:
+        with sqlite3.connect(state_db, timeout=2) as connection:
+            row = connection.execute(
+                "SELECT rollout_path FROM threads WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None or not row[0]:
+                return False
+            current = Path(str(row[0]))
+            is_legacy_temp_path = any(
+                part.startswith("muster-codex-home-") for part in current.parts
+            )
+            if current.is_file() and not is_legacy_temp_path:
+                return False
+
+            sessions_dir = source_home / "sessions"
+            candidates = list(sessions_dir.rglob(f"*{session_id}.jsonl"))
+            if len(candidates) != 1:
+                return False
+            replacement = candidates[0].resolve()
+            connection.execute(
+                "UPDATE threads SET rollout_path = ? WHERE id = ?",
+                (str(replacement), session_id),
+            )
+            connection.commit()
+            return True
+    except (OSError, sqlite3.Error):
+        # A failed best-effort repair must not prevent Codex from attempting
+        # its normal resume path, which may still succeed on newer versions.
+        return False
