@@ -155,6 +155,10 @@ def _normalize_mcp(raw: Any) -> tuple[dict[str, Any] | None, list[str]]:
         return None, ["MCP configuration has neither a command nor a URL"]
     if raw.get("disabled") is True or raw.get("enabled") is False:
         warnings.append("The source MCP is disabled; Muster will import it enabled")
+    if raw.get("oauth") is not None:
+        warnings.append(
+            "OAuth authorization state is managed by Claude and is not copied into Muster"
+        )
     return config, warnings
 
 
@@ -370,6 +374,9 @@ def _mcp_candidates(
     home: Path,
     runtime: SourceRuntime,
     configs: list[tuple[Path, dict[str, Any]]],
+    *,
+    source_scope: str = "user",
+    origin_metadata: dict[str, Any] | None = None,
 ) -> tuple[list[DiscoveredCapability], list[str]]:
     selected: dict[str, tuple[Path, Any]] = {}
     for path, config in configs:
@@ -389,20 +396,29 @@ def _mcp_candidates(
             DiscoveredCapability(
                 resource_type="mcp",
                 source_runtime=runtime,
-                source_scope="user",
+                source_scope=source_scope,
                 source_locator=locator,
                 name=name,
-                description=f"Imported from {runtime.title()} user configuration",
+                description=(
+                    f"Imported from {runtime.title()} plugin {origin_metadata['plugin']}"
+                    if origin_metadata and origin_metadata.get("plugin")
+                    else f"Imported from {runtime.title()} user configuration"
+                ),
                 payload={"name": name, "description": f"Imported from {runtime.title()}", "config": config, "enabled": True},
                 preview=_mcp_preview(config),
                 warnings=item_warnings,
-                source_metadata={"config": _display_path(path, home)},
+                source_metadata={
+                    "config": _display_path(path, home),
+                    **(origin_metadata or {}),
+                },
             )
         )
     return items, warnings
 
 
-def _claude_plugin_roots(home: Path) -> tuple[list[PluginRoot], list[str]]:
+def _claude_plugin_roots(
+    home: Path, enabled_plugins: dict[str, Any] | None = None
+) -> tuple[list[PluginRoot], list[str]]:
     registry_path = home / ".claude" / "plugins" / "installed_plugins.json"
     if not registry_path.is_file():
         return [], []
@@ -419,6 +435,8 @@ def _claude_plugin_roots(home: Path) -> tuple[list[PluginRoot], list[str]]:
     seen: set[Path] = set()
     warnings: list[str] = []
     for plugin_id, installs in sorted(plugins.items()):
+        if enabled_plugins and enabled_plugins.get(str(plugin_id)) is False:
+            continue
         if not isinstance(installs, list):
             continue
         user_installs = [
@@ -541,6 +559,24 @@ def _plugin_capabilities(
         )
         items.extend(discovered)
         warnings.extend(errors)
+        mcp_path = plugin.root / ".mcp.json"
+        if plugin.runtime == "claude" and mcp_path.is_file():
+            try:
+                mcp_config = _read_json(mcp_path)
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                warnings.append(
+                    f"Could not read {_display_path(mcp_path, home)}: {exc}"
+                )
+            else:
+                discovered, errors = _mcp_candidates(
+                    home,
+                    "claude",
+                    [(mcp_path, mcp_config)],
+                    source_scope="plugin",
+                    origin_metadata=origin_metadata,
+                )
+                items.extend(discovered)
+                warnings.extend(errors)
     return items, warnings
 
 
@@ -563,19 +599,27 @@ def discover_capabilities(home: Path | None = None) -> DiscoveryResult:
     items.extend(discovered)
     warnings.extend(errors)
 
-    claude_plugin_roots, errors = _claude_plugin_roots(home)
+    claude_configs: list[tuple[Path, dict[str, Any]]] = []
+    claude_settings: dict[str, Any] = {}
+    for path in (home / ".claude.json", home / ".claude" / "settings.json"):
+        if path.is_file():
+            try:
+                config = _read_json(path)
+                claude_configs.append((path, config))
+                if path.name == "settings.json":
+                    claude_settings = config
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                warnings.append(f"Could not read {_display_path(path, home)}: {exc}")
+
+    enabled_plugins = claude_settings.get("enabledPlugins")
+    claude_plugin_roots, errors = _claude_plugin_roots(
+        home, enabled_plugins if isinstance(enabled_plugins, dict) else None
+    )
     warnings.extend(errors)
     discovered, errors = _plugin_capabilities(home, claude_plugin_roots)
     items.extend(discovered)
     warnings.extend(errors)
 
-    claude_configs: list[tuple[Path, dict[str, Any]]] = []
-    for path in (home / ".claude.json", home / ".claude" / "settings.json"):
-        if path.is_file():
-            try:
-                claude_configs.append((path, _read_json(path)))
-            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-                warnings.append(f"Could not read {_display_path(path, home)}: {exc}")
     discovered, errors = _mcp_candidates(home, "claude", claude_configs)
     items.extend(discovered)
     warnings.extend(errors)
