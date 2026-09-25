@@ -311,21 +311,11 @@ async def create_message(
         from app.services.task_tags import add_system_tag
 
         await add_system_tag(db, task, "Canvas")
-    # A new user message always resumes a waiting/done/failed task -- this is
-    # how a task the user just marked complete (or that finished/failed on
-    # its own) gets reopened.
-    if task.status in (
-        TaskStatus.waiting_on_you,
-        TaskStatus.done,
-        TaskStatus.failed,
-        TaskStatus.cancelled,
-    ):
-        task.status = TaskStatus.queued
-        task.attention_reason = None
-        task.completed_at = None
     await db.commit()
     await db.refresh(message)
-    await process_manager.trigger(task_id)
+    # ProcessManager owns the reopen + spawn transition under the same
+    # per-task lock as cancel, complete, retry, and process exit.
+    await process_manager.resume(task_id)
     return message
 
 

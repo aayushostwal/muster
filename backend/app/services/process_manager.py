@@ -119,11 +119,25 @@ class ProcessManager:
     # -- public API (see docs/SPEC.md "Integration seams") ------------------
 
     async def trigger(self, task_id: uuid.UUID) -> None:
+        await self._trigger(task_id, reopen=False)
+
+    async def resume(self, task_id: uuid.UUID) -> None:
+        """Resume a task after a newly persisted user message.
+
+        Reopening and spawning share the same lifecycle lock, so an explicit
+        cancel/complete cannot be lost between the route's DB commit and the
+        next subprocess start.
+        """
+        await self._trigger(task_id, reopen=True)
+
+    async def _trigger(self, task_id: uuid.UUID, *, reopen: bool) -> None:
         while True:
             reader_task: asyncio.Task | None = None
             async with self._lock_for(task_id):
                 running = self._running.get(task_id)
                 if running is None:
+                    if reopen:
+                        await self._reopen_for_follow_up(task_id)
                     await self._spawn(task_id)
                     return
                 if running.pending_final_status is None and running.process.returncode is None:
@@ -509,11 +523,45 @@ class ProcessManager:
             logger.debug("stdin delivery failed for task %s; will resume next trigger", task_id)
             return False
 
+    async def _reopen_for_follow_up(self, task_id: uuid.UUID) -> None:
+        """Clear a terminal/attention state immediately before a follow-up spawn.
+
+        The caller holds the task lifecycle lock. Keeping this transition in
+        ProcessManager prevents route-level writes from racing cancel,
+        complete, process exit, or a scheduled retry.
+        """
+        changed = False
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                return
+            if task.status in (
+                TaskStatus.waiting_on_you,
+                TaskStatus.done,
+                TaskStatus.failed,
+                TaskStatus.cancelled,
+            ):
+                task.status = TaskStatus.queued
+                task.attention_reason = None
+                task.completed_at = None
+                await db.commit()
+                changed = True
+        if changed:
+            await broadcast(
+                task_id,
+                {"type": "status", "status": TaskStatus.queued.value, "attention_reason": None},
+            )
+
     async def _spawn(self, task_id: uuid.UUID, initial_prompt: str | None = None) -> None:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None:
                 logger.warning("trigger() called for unknown task %s", task_id)
+                return
+            if task.status in (TaskStatus.done, TaskStatus.cancelled):
+                # A delayed retry or trigger may already have been waiting on
+                # the lifecycle lock when the user completed/cancelled. Never
+                # resurrect an explicit terminal state.
                 return
             project = await self._load_project(db, task.project_id)
             if project is None:

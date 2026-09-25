@@ -267,6 +267,13 @@ clicks are idempotent. Posting another message to a completed, cancelled,
 failed, or waiting task clears its terminal timestamps/attention reason and
 resumes the native Claude/Codex session.
 
+The UI presents `waiting_on_you` as two distinct stages using
+`attention_reason`: `awaiting_review` is **Ready for review**, while
+`blocking_question` and `tool_permission` are **Needs your input**. Sending a
+follow-up optimistically shows **Reopening…**, then the persisted state moves
+through `queued`/`running`. **Completed** is shown only for `done`; finishing a
+single agent turn never makes the whole task appear complete.
+
 Automatic completion is deliberately an extension point. It may be added only
 for a trusted structured delivery event, such as a provider-confirmed PR or a
 durably stored Canvas delivery record with explicit task provenance. A zero

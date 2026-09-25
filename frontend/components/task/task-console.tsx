@@ -49,13 +49,18 @@ import { SLASH_PATTERN, useSlashCommands, type SlashCommandItem } from "@/hooks/
 import { api } from "@/lib/api";
 import { storedMagicCanvasContext } from "@/lib/magic-canvas";
 import { SYSTEM_TASK_TAGS } from "@/lib/task-tags";
+import { taskStage, type TaskStage } from "@/lib/task-status";
 import type { AgentBackend, ListResponse, Message, RunAttempt, Task, TaskInvocation, TaskStatus, ToolApproval } from "@/lib/types";
 import { backendLabel, cn, formatDateTime, shortId } from "@/lib/utils";
 
-const statusMeta: Record<TaskStatus, { label: string; color: string }> = {
+type ConsoleStage = TaskStage | "reopening";
+
+const statusMeta: Record<ConsoleStage, { label: string; color: string }> = {
   queued: { label: "Queued", color: "bg-slate-400" },
   running: { label: "Running", color: "bg-signal-400" },
-  waiting_on_you: { label: "Waiting on you", color: "bg-amber-400" },
+  waiting_on_you: { label: "Needs your input", color: "bg-amber-400" },
+  ready_for_review: { label: "Ready for review", color: "bg-violet-400" },
+  reopening: { label: "Reopening…", color: "bg-sky-400" },
   done: { label: "Complete", color: "bg-emerald-400" },
   failed: { label: "Failed", color: "bg-red-400" },
   cancelled: { label: "Cancelled", color: "bg-slate-600" },
@@ -79,6 +84,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   const [restartOpen, setRestartOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const [view, setView] = useState<"terminal" | "activity" | "agents">("terminal");
   const queryClient = useQueryClient(); const toast = useToast();
   const action = useMutation({
@@ -110,6 +116,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
   if (task.isPending) return <div className="mx-auto max-w-screen-2xl space-y-4 p-5 md:p-8"><Skeleton className="h-24" /><Skeleton className="h-[36rem]" /></div>;
   if (task.isError) return <div className="mx-auto max-w-3xl p-6"><ErrorState message={task.error.message} retry={() => task.refetch()} /></div>;
   const current = task.data;
+  const currentStage: ConsoleStage = reopening ? "reopening" : taskStage(current);
   const latestAttempt = attempts.data?.items.at(-1);
   const retrying = current.status === "running" && latestAttempt?.failure_class === "transient" && latestAttempt.backoff_seconds;
   const pendingApproval = approvals.data?.items.find((approval) => approval.status === "pending");
@@ -126,7 +133,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
           </div>
           <div className="mt-0.5 flex min-w-0 items-center gap-2">
             <h1 className="truncate text-sm font-semibold text-white">{current.title}</h1>
-            <span className="hidden shrink-0 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 text-[0.56rem] text-slate-500 md:inline-flex"><span className={cn("h-1.5 w-1.5 rounded-full", statusMeta[current.status].color, current.status === "running" && "animate-pulse")} />{statusMeta[current.status].label}</span>
+            <span className="hidden shrink-0 items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 text-[0.56rem] text-slate-500 md:inline-flex"><span className={cn("h-1.5 w-1.5 rounded-full", statusMeta[currentStage].color, (currentStage === "running" || currentStage === "reopening") && "animate-pulse")} />{statusMeta[currentStage].label}</span>
             <span className="hidden shrink-0 text-[0.6rem] text-slate-600 xl:inline">{backendLabel(current.backend)}{current.model ? ` · ${current.model}` : ""}</span>
           </div>
         </div>
@@ -175,7 +182,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
           <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{(["terminal", "activity", "agents"] as const).map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item}</button>)}</nav>
           <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame><TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} /></TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
-          {view === "terminal" && <Composer taskId={taskId} status={current.status} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
+          {view === "terminal" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
         </section>
         <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
       </div>
@@ -206,7 +213,7 @@ function ToolApprovalBar({ approval }: { approval: ToolApproval }) {
   return <motion.section initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mt-2 flex flex-col gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.05] px-3 py-3 sm:flex-row sm:items-center"><div className="flex min-w-0 flex-1 items-center gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-amber-400/20 bg-amber-400/[0.07] text-amber-400"><ShieldAlert className="h-4 w-4" /></span><div className="min-w-0"><p className="text-xs font-medium text-amber-100">{approval.tool_name} needs permission</p><p className="mt-1 truncate font-mono text-[0.62rem] text-amber-100/50" title={command}>{command || approval.reason || "Runtime permission escalation"}</p></div></div><div className="flex shrink-0 gap-1.5"><Button size="sm" variant="ghost" loading={resolve.isPending} onClick={() => resolve.mutate("deny")}>Deny</Button><Button size="sm" loading={resolve.isPending} onClick={() => resolve.mutate("approve_once")}>Allow once</Button><Button size="sm" variant="primary" loading={resolve.isPending} onClick={() => resolve.mutate("always_allow")}>Always allow</Button></div></motion.section>;
 }
 
-function Composer({ taskId, status, onPreparePr }: { taskId: string; status: TaskStatus; onPreparePr: () => void }) {
+function Composer({ taskId, status, attentionReason, onReopeningChange, onPreparePr }: { taskId: string; status: TaskStatus; attentionReason: Task["attention_reason"]; onReopeningChange: (reopening: boolean) => void; onPreparePr: () => void }) {
   const [value, setValue] = useState(""); const [error, setError] = useState(""); const queryClient = useQueryClient(); const toast = useToast();
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -216,9 +223,40 @@ function Composer({ taskId, status, onPreparePr }: { taskId: string; status: Tas
       const canvas = storedMagicCanvasContext(taskId);
       return api.sendMessage(taskId, content, canvas ? [canvas] : []);
     },
-    onMutate: async (content) => { await queryClient.cancelQueries({ queryKey: ["messages", taskId] }); const previous = queryClient.getQueryData<ListResponse<Message>>(["messages", taskId]); const optimistic: Message = { id: `optimistic-${Date.now()}`, task_id: taskId, sender: "user", content_text: content, media: [], is_blocking_question: false, created_at: new Date().toISOString(), optimistic: true }; queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], { items: [...(previous?.items ?? []), optimistic] }); setValue(""); return { previous }; },
-    onError: (cause: Error, _content, context) => { queryClient.setQueryData(["messages", taskId], context?.previous); setError(cause.message); toast("Message was not sent", "error"); },
-    onSuccess: (saved) => { queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], (current) => ({ items: [...(current?.items.filter((item) => !item.optimistic) ?? []), saved] })); queryClient.invalidateQueries({ queryKey: ["task", taskId] }); setError(""); },
+    onMutate: async (content) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: ["messages", taskId] }),
+        queryClient.cancelQueries({ queryKey: ["task", taskId] }),
+      ]);
+      const previousMessages = queryClient.getQueryData<ListResponse<Message>>(["messages", taskId]);
+      const previousTask = queryClient.getQueryData<Task>(["task", taskId]);
+      const shouldReopen = status === "waiting_on_you" || status === "done" || status === "failed" || status === "cancelled";
+      if (shouldReopen) {
+        onReopeningChange(true);
+        queryClient.setQueryData<Task>(["task", taskId], (current) => current ? {
+          ...current,
+          status: "queued",
+          attention_reason: null,
+          completed_at: null,
+        } : current);
+      }
+      const optimistic: Message = { id: `optimistic-${Date.now()}`, task_id: taskId, sender: "user", content_text: content, media: [], is_blocking_question: false, created_at: new Date().toISOString(), optimistic: true };
+      queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], { items: [...(previousMessages?.items ?? []), optimistic] });
+      setValue("");
+      return { previousMessages, previousTask, shouldReopen };
+    },
+    onError: (cause: Error, _content, context) => {
+      queryClient.setQueryData(["messages", taskId], context?.previousMessages);
+      if (context?.shouldReopen) queryClient.setQueryData(["task", taskId], context.previousTask);
+      setError(cause.message);
+      toast("Message was not sent", "error");
+    },
+    onSuccess: async (saved) => {
+      queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], (current) => ({ items: [...(current?.items.filter((item) => !item.optimistic) ?? []), saved] }));
+      await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+      setError("");
+    },
+    onSettled: () => onReopeningChange(false),
   });
   const submit = (event: FormEvent) => { event.preventDefault(); const content = value.trim(); if (content && !send.isPending) send.mutate(content); };
   const changeValue = (next: string) => {
@@ -263,7 +301,14 @@ function Composer({ taskId, status, onPreparePr }: { taskId: string; status: Tas
     }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
   };
-  return <form onSubmit={submit} className="border-t border-white/[0.07] bg-black/10 p-3"><div className="mx-auto max-w-3xl"><div className="relative flex items-end gap-2 rounded-xl border border-white/10 bg-ink-950/70 p-1.5 transition focus-within:border-signal-400/30 focus-within:ring-4 focus-within:ring-signal-400/[0.05]"><Button type="button" size="icon" variant="ghost" onClick={onPreparePr} aria-label="Prepare pull request" title="Prepare pull request"><GitPullRequest className="h-4 w-4" /></Button><textarea value={value} onChange={(event) => changeValue(event.target.value)} onKeyDown={handleKeyDown} rows={1} className="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white placeholder:text-slate-700 focus:outline-none" placeholder={status === "waiting_on_you" ? "Respond to the agent" : "Send a follow-up instruction, / for a command, agent, or skill"} aria-label="Message agent" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls={slashQuery !== null ? "slash-command-list" : undefined} aria-expanded={slashQuery !== null} aria-activedescendant={slashQuery !== null && slashCommands.suggestions[slashActiveIndex] ? `slash-command-${slashCommands.suggestions[slashActiveIndex].id}` : undefined} /><Button type="submit" size="icon" variant="primary" loading={send.isPending} disabled={!value.trim()} aria-label="Send message"><Send className="h-4 w-4" /></Button><SlashCommandMenu open={slashQuery !== null} loading={slashCommands.isPending} error={slashCommands.isError} items={slashCommands.suggestions} activeIndex={slashActiveIndex} onHover={setSlashActiveIndex} onSelect={selectSlashCommand} className="absolute inset-x-1.5 bottom-full mb-2" /></div>{error && <p className="mt-2 text-xs text-red-400" role="alert">{error}</p>}<p className="mt-1.5 px-1 text-[0.56rem] text-slate-700">Enter to send · Shift + Enter for a new line · /pr to prepare delivery</p></div></form>;
+  const placeholder = attentionReason === "awaiting_review"
+    ? "Ask a follow-up, or mark the task complete"
+    : status === "waiting_on_you"
+      ? "Respond to the agent"
+      : status === "done" || status === "failed" || status === "cancelled"
+        ? "Send a follow-up to reopen this task"
+        : "Send a follow-up instruction, / for a command, agent, or skill";
+  return <form onSubmit={submit} className="border-t border-white/[0.07] bg-black/10 p-3"><div className="mx-auto max-w-3xl"><div className="relative flex items-end gap-2 rounded-xl border border-white/10 bg-ink-950/70 p-1.5 transition focus-within:border-signal-400/30 focus-within:ring-4 focus-within:ring-signal-400/[0.05]"><Button type="button" size="icon" variant="ghost" onClick={onPreparePr} aria-label="Prepare pull request" title="Prepare pull request"><GitPullRequest className="h-4 w-4" /></Button><textarea value={value} onChange={(event) => changeValue(event.target.value)} onKeyDown={handleKeyDown} rows={1} className="max-h-28 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white placeholder:text-slate-700 focus:outline-none" placeholder={placeholder} aria-label="Message agent" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-controls={slashQuery !== null ? "slash-command-list" : undefined} aria-expanded={slashQuery !== null} aria-activedescendant={slashQuery !== null && slashCommands.suggestions[slashActiveIndex] ? `slash-command-${slashCommands.suggestions[slashActiveIndex].id}` : undefined} /><Button type="submit" size="icon" variant="primary" loading={send.isPending} disabled={!value.trim()} aria-label="Send message"><Send className="h-4 w-4" /></Button><SlashCommandMenu open={slashQuery !== null} loading={slashCommands.isPending} error={slashCommands.isError} items={slashCommands.suggestions} activeIndex={slashActiveIndex} onHover={setSlashActiveIndex} onSelect={selectSlashCommand} className="absolute inset-x-1.5 bottom-full mb-2" /></div>{error && <p className="mt-2 text-xs text-red-400" role="alert">{error}</p>}<p className="mt-1.5 px-1 text-[0.56rem] text-slate-700">Enter to send · Shift + Enter for a new line · /pr to prepare delivery</p></div></form>;
 }
 
 function TaskDetailsDrawer({
@@ -294,7 +339,7 @@ function TaskDetailsDrawer({
           </div>
           <dl className="mt-4 grid grid-cols-2 gap-2">
             <Detail label="Project" value={projectName ?? "Loading project"} />
-            <Detail label="Status" value={statusMeta[task.status].label} />
+            <Detail label="Status" value={statusMeta[taskStage(task)].label} />
             <Detail label="Runtime" value={backendLabel(task.backend)} />
             <Detail label="Model" value={task.model || "Runtime default"} />
             <Detail label="Created" value={formatDateTime(task.created_at)} />
@@ -373,11 +418,12 @@ function TaskMobileActions({
   onOpenTranscript: () => void;
   onDelete: () => void;
 }) {
+  const stage = taskStage(task);
   return (
     <Drawer open={open} onClose={onClose} title="Task actions">
       <div className="space-y-5">
         <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
-          <div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", statusMeta[task.status].color, task.status === "running" && "animate-pulse")} /><span className="text-sm font-medium text-white">{statusMeta[task.status].label}</span></div>
+          <div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", statusMeta[stage].color, task.status === "running" && "animate-pulse")} /><span className="text-sm font-medium text-white">{statusMeta[stage].label}</span></div>
           <p className="mt-2 text-xs text-slate-600">{backendLabel(task.backend)} · {task.model || "Runtime default"}</p>
         </div>
         <div className="grid gap-2">

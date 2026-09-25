@@ -13,7 +13,9 @@ this logic in CI.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -93,6 +95,46 @@ async def test_clean_exit_does_not_auto_complete_the_task(manager):
     assert task.status == TaskStatus.waiting_on_you
     assert task.attention_reason == "awaiting_review"
     assert task.completed_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "previous_status",
+    [
+        TaskStatus.waiting_on_you,
+        TaskStatus.done,
+        TaskStatus.failed,
+        TaskStatus.cancelled,
+    ],
+)
+async def test_follow_up_reopens_terminal_or_review_state_before_spawning(
+    manager, monkeypatch, previous_status
+):
+    pm, session_local = manager
+    task_id = await _make_task(session_local)
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        task.status = previous_status
+        task.attention_reason = "awaiting_review"
+        task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    spawn = AsyncMock()
+    broadcast = AsyncMock()
+    monkeypatch.setattr(pm, "_spawn", spawn)
+    monkeypatch.setattr(process_manager_module, "broadcast", broadcast)
+
+    await pm.resume(task_id)
+
+    task = await _get_task(session_local, task_id)
+    assert task.status == TaskStatus.queued
+    assert task.attention_reason is None
+    assert task.completed_at is None
+    spawn.assert_awaited_once_with(task_id)
+    broadcast.assert_awaited_once_with(
+        task_id,
+        {"type": "status", "status": "queued", "attention_reason": None},
+    )
 
 
 @pytest.mark.asyncio

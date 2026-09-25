@@ -141,13 +141,15 @@ async def test_delete_task_stops_active_run_and_removes_task(
 
 
 @pytest.mark.asyncio
-async def test_posting_a_message_persists_it_and_triggers_process_manager(
+async def test_posting_a_message_persists_it_and_resumes_process_manager(
     override_get_db, monkeypatch
 ):
     from app.services.process_manager import process_manager
 
     trigger_mock = AsyncMock()
     monkeypatch.setattr(process_manager, "trigger", trigger_mock)
+    resume_mock = AsyncMock()
+    monkeypatch.setattr(process_manager, "resume", resume_mock)
 
     app = _build_app(override_get_db)
     transport = ASGITransport(app=app)
@@ -186,8 +188,9 @@ async def test_posting_a_message_persists_it_and_triggers_process_manager(
         resp = await client.get(f"/api/tasks/{task_id}")
         assert resp.json()["tags"] == ["Canvas"]
 
-        # trigger called again for the follow-up message
-        assert trigger_mock.await_count == 2
+        # New tasks trigger once; follow-up messages use the atomic resume path.
+        trigger_mock.assert_awaited_once()
+        resume_mock.assert_awaited_once_with(uuid.UUID(task_id))
 
         resp = await client.get(f"/api/tasks/{task_id}/messages")
         assert resp.status_code == 200

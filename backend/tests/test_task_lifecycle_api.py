@@ -89,13 +89,15 @@ async def test_restart_endpoint_delegates_the_full_reset_to_process_manager(
 
 
 @pytest.mark.asyncio
-async def test_posting_a_message_reopens_a_done_task_and_clears_attention_reason(
+async def test_posting_a_message_delegates_atomic_resume_to_process_manager(
     override_get_db, monkeypatch
 ):
     from app.services.process_manager import process_manager
 
     trigger_mock = AsyncMock()
     monkeypatch.setattr(process_manager, "trigger", trigger_mock)
+    resume_mock = AsyncMock()
+    monkeypatch.setattr(process_manager, "resume", resume_mock)
 
     app = _build_app(override_get_db)
     transport = ASGITransport(app=app)
@@ -118,14 +120,9 @@ async def test_posting_a_message_reopens_a_done_task_and_clears_attention_reason
             f"/api/tasks/{task_id}/messages", json={"content_text": "one more thing"}
         )
         assert resp.status_code == 201
-
-        resp = await client.get(f"/api/tasks/{task_id}")
-        body = resp.json()
-        assert body["status"] == "queued"
-        assert body["attention_reason"] is None
-
-        # trigger() called once at creation, once for this follow-up message.
-        assert trigger_mock.await_count == 2
+        resume_mock.assert_awaited_once_with(uuid.UUID(task_id))
+        # Creation still uses trigger(); follow-ups use the atomic resume path.
+        trigger_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
