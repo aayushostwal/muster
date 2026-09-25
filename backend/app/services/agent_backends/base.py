@@ -144,3 +144,24 @@ class AdapterBindings:
     skills: dict[str, str]
     selected_agent_prompt: str | None = None
     approval_ids: tuple[uuid.UUID, ...] = ()
+
+
+def pull_request_guidance(bindings: AdapterBindings) -> str:
+    """Keep PR mutations on an authenticated, non-interactive path."""
+    has_github_mcp = any(
+        "github" in name.casefold()
+        or "github" in str(config.get("url", "")).casefold()
+        or "github" in str(config.get("command", "")).casefold()
+        for name, config in bindings.mcp_servers.items()
+    )
+    if has_github_mcp:
+        return (
+            "GitHub operations: a GitHub MCP connector is configured. Use its tools to create "
+            "or update pull requests. Never run `gh auth login` or request device authorization."
+        )
+    return (
+        "GitHub operations: no GitHub MCP connector is configured for this project. Do not run "
+        "interactive authentication such as `gh auth login`. Complete and push the repository "
+        "changes, then clearly report that PR creation or editing requires a GitHub connector "
+        "to be enabled in Muster."
+    )

@@ -39,6 +39,7 @@ from app.db.models import (
     ProjectCapabilityOverride,
     Skill,
     Task,
+    TaskBackendSession,
     TaskEvent,
     TaskInvocation,
     TaskRunAttempt,
@@ -61,7 +62,11 @@ from app.services.agent_backends.base import (
     UsageEvent,
 )
 from app.services.agent_backends.claude_code import ClaudeCodeAdapter
-from app.services.agent_backends.codex import CodexAdapter, create_codex_home_overlay
+from app.services.agent_backends.codex import (
+    CodexAdapter,
+    create_codex_home_overlay,
+    repair_codex_rollout_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +77,55 @@ _ADAPTERS: dict[AgentBackend, AgentBackendAdapter] = {
 
 _STDERR_TAIL_LIMIT = 4000
 _FORCE_KILL_GRACE = 5.0
+
+
+def _default_backend_session_path(task_id: uuid.UUID, backend: AgentBackend) -> str:
+    return f"backend-sessions/{task_id}/{backend.value}"
+
+
+def _resolve_backend_session_path(storage_path: str) -> Path:
+    """Resolve a persisted relative path and keep it inside Muster's data dir."""
+    data_dir = settings.data_dir.resolve()
+    resolved = (settings.data_dir / storage_path).resolve()
+    try:
+        resolved.relative_to(data_dir)
+    except ValueError as exc:
+        raise RuntimeError("Backend session storage escaped MUSTER_DATA_DIR") from exc
+    return resolved
+
+
+async def _get_or_create_backend_session(
+    db: AsyncSession, task: Task
+) -> TaskBackendSession:
+    session = (
+        await db.execute(
+            select(TaskBackendSession).where(TaskBackendSession.task_id == task.id)
+        )
+    ).scalar_one_or_none()
+    expected_path = _default_backend_session_path(task.id, task.backend)
+    if session is None:
+        session = TaskBackendSession(
+            task_id=task.id,
+            backend=task.backend,
+            session_id=task.session_id,
+            storage_path=expected_path,
+        )
+        db.add(session)
+        await db.flush()
+        return session
+
+    if session.backend != task.backend:
+        session.backend = task.backend
+        session.session_id = task.session_id
+        session.storage_path = expected_path
+    elif session.session_id is None and task.session_id is not None:
+        # Backward-compatible adoption of Task.session_id during rollout.
+        session.session_id = task.session_id
+    elif task.session_id != session.session_id:
+        # The dedicated row is authoritative after migration; keep the legacy
+        # API field synchronized until it can be removed separately.
+        task.session_id = session.session_id
+    return session
 
 
 @dataclass
@@ -276,6 +330,13 @@ class ProcessManager:
                 task.status = TaskStatus.queued
                 task.attention_reason = None
                 task.session_id = None
+                backend_session = (
+                    await db.execute(
+                        select(TaskBackendSession).where(TaskBackendSession.task_id == task_id)
+                    )
+                ).scalar_one_or_none()
+                if backend_session is not None:
+                    backend_session.session_id = None
                 task.started_at = None
                 task.completed_at = None
 
@@ -374,6 +435,15 @@ class ProcessManager:
                 task.model = None
                 task.fallback_models = []
                 task.session_id = None
+                backend_session = (
+                    await db.execute(
+                        select(TaskBackendSession).where(TaskBackendSession.task_id == task_id)
+                    )
+                ).scalar_one_or_none()
+                if backend_session is not None:
+                    backend_session.backend = backend
+                    backend_session.session_id = None
+                    backend_session.storage_path = _default_backend_session_path(task_id, backend)
                 task.status = TaskStatus.queued
                 task.attention_reason = None
                 task.completed_at = None
@@ -602,9 +672,15 @@ class ProcessManager:
                     task.git_baseline_dirty_paths = baseline
                     task.git_baseline_captured_at = datetime.now(timezone.utc)
 
-            if task.session_id:
+            backend_session = await _get_or_create_backend_session(db, task)
+            resume_session_id = backend_session.session_id
+            backend_session_path = _resolve_backend_session_path(backend_session.storage_path)
+
+            if resume_session_id:
                 prompt = await self._latest_user_prompt_db(db, task_id) or task.initial_prompt
-                cmd = adapter.resume_command(task, project, bindings, secrets, task.session_id, prompt)
+                cmd = adapter.resume_command(
+                    task, project, bindings, secrets, resume_session_id, prompt
+                )
                 await self._append_transcript(task_id, "user", prompt)
             else:
                 prompt = initial_prompt or task.initial_prompt
@@ -640,10 +716,12 @@ class ProcessManager:
         runtime_env = {**os.environ, **secrets}
         runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd.argv))
         if task.backend == AgentBackend.codex:
-            codex_home = create_codex_home_overlay(bindings.tool_rules)
-            if codex_home is not None:
-                runtime_env["CODEX_HOME"] = str(codex_home)
-                runtime_temp_paths.append(codex_home)
+            if resume_session_id:
+                repair_codex_rollout_path(resume_session_id)
+            codex_home = create_codex_home_overlay(
+                bindings.tool_rules, backend_session_path
+            )
+            runtime_env["CODEX_HOME"] = str(codex_home)
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -1062,8 +1140,15 @@ class ProcessManager:
             async with SessionLocal() as db:
                 task = await db.get(Task, task_id)
                 invocation = await db.get(TaskInvocation, running.invocation_id)
+                backend_session = (
+                    await db.execute(
+                        select(TaskBackendSession).where(TaskBackendSession.task_id == task_id)
+                    )
+                ).scalar_one_or_none()
                 if task is not None and task.session_id != event.session_id:
                     task.session_id = event.session_id
+                if backend_session is not None:
+                    backend_session.session_id = event.session_id
                 if invocation is not None:
                     invocation.session_id = event.session_id
                 await db.commit()

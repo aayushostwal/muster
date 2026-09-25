@@ -17,6 +17,7 @@ from app.services.agent_backends.base import (
     PermissionRequest,
     SessionId,
     UsageEvent,
+    pull_request_guidance,
 )
 
 
@@ -118,6 +119,7 @@ class ClaudeCodeAdapter:
             and rule.get("backend") in {"all", "claude_code"}
             and rule.get("claude_pattern")
         ]
+        denied_tools.append("Bash(gh auth login *)")
         if allowed_tools:
             flags += ["--allowedTools", ",".join(allowed_tools)]
         if denied_tools:
@@ -144,7 +146,7 @@ class ClaudeCodeAdapter:
                 "--agents",
                 json.dumps(self._normalize_agent_profiles(bindings.agent_profiles)),
             ]
-        system_sections = []
+        system_sections = [pull_request_guidance(bindings)]
         if bindings.selected_agent_prompt:
             system_sections.append(bindings.selected_agent_prompt)
         if bindings.skills:
