@@ -96,6 +96,33 @@ def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path
         "---\nname: Nexus Reviewer\ndescription: Reviews production changes\n---\nReview safely.\n",
     )
     _write(
+        claude_root / ".mcp.json",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "slack": {
+                        "type": "http",
+                        "url": "https://mcp.slack.test/mcp",
+                        "oauth": {"clientId": "managed-by-claude"},
+                    }
+                }
+            }
+        ),
+    )
+    disabled_claude_root = (
+        tmp_path / ".claude" / "plugins" / "cache" / "disabled" / "disabled" / "1.0.0"
+    )
+    _write(
+        disabled_claude_root / ".mcp.json",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "disabled-connector": {"url": "https://disabled.example.test/mcp"}
+                }
+            }
+        ),
+    )
+    _write(
         tmp_path / ".claude" / "plugins" / "installed_plugins.json",
         json.dumps(
             {
@@ -107,8 +134,26 @@ def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path
                             "installPath": str(claude_root),
                             "version": "1.35.0",
                         }
-                    ]
+                    ],
+                    "disabled@claude-plugins-official": [
+                        {
+                            "scope": "user",
+                            "installPath": str(disabled_claude_root),
+                            "version": "1.0.0",
+                        }
+                    ],
                 },
+            }
+        ),
+    )
+    _write(
+        tmp_path / ".claude" / "settings.json",
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "nexus@nexus-marketplace": True,
+                    "disabled@claude-plugins-official": False,
+                }
             }
         ),
     )
@@ -140,14 +185,27 @@ def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path
     result = discover_capabilities(tmp_path)
     by_name = {item.name: item for item in result.items}
 
-    assert {"Nexus Incident", "Nexus Reviewer", "Nexus Planning", "Nexus Architect"} <= by_name.keys()
+    assert {
+        "Nexus Incident",
+        "Nexus Reviewer",
+        "Nexus Planning",
+        "Nexus Architect",
+        "slack",
+    } <= by_name.keys()
     assert "Disabled Skill" not in by_name
     assert "Stale Skill" not in by_name
+    assert "disabled-connector" not in by_name
     assert by_name["Nexus Incident"].source_scope == "plugin"
     assert by_name["Nexus Incident"].source_metadata["plugin"] == "nexus@nexus-marketplace"
     assert by_name["Nexus Reviewer"].payload["backend"] == "claude_code"
     assert by_name["Nexus Architect"].payload["backend"] == "codex"
     assert by_name["Nexus Planning"].preview["plugin"] == "nexus@codex-marketplace-global"
+    assert by_name["slack"].source_scope == "plugin"
+    assert by_name["slack"].source_metadata["plugin"] == "nexus@nexus-marketplace"
+    assert by_name["slack"].payload["config"]["url"] == "https://mcp.slack.test/mcp"
+    assert by_name["slack"].warnings == [
+        "OAuth authorization state is managed by Claude and is not copied into Muster"
+    ]
     assert result.warnings == []
 
 
