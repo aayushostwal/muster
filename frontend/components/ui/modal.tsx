@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useRef, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -17,12 +17,13 @@ interface ModalProps {
 
 export function Modal({ open, onClose, title, description, children, wide }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const close = useEffectEvent(onClose);
 
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement as HTMLElement | null;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") close();
     };
     document.addEventListener("keydown", onKeyDown);
     const frame = requestAnimationFrame(() => dialogRef.current?.focus());
@@ -33,7 +34,7 @@ export function Modal({ open, onClose, title, description, children, wide }: Mod
       document.body.style.overflow = "";
       previous?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   return (
     <AnimatePresence>
