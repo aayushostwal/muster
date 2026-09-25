@@ -135,6 +135,7 @@ async def resolve_tool_approval(
 
     approval.resolved_at = datetime.now(timezone.utc)
     task.status = TaskStatus.queued
+    task.attention_reason = None
     db.add(
         Message(
             task_id=task_id,

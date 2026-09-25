@@ -23,6 +23,13 @@ class Settings(BaseSettings):
 
     claude_code_bin: str = "claude"
     codex_bin: str = "codex"
+    git_bin: str = "git"
+    gh_bin: str = "gh"
+
+    # PR delivery: per-subprocess timeouts (seconds).
+    pr_git_timeout_seconds: int = 30
+    pr_validation_timeout_seconds: int = 900
+    pr_provider_timeout_seconds: int = 60
 
     # Retry / backoff for transient failures (session/usage limit, network).
     retry_base_seconds: int = 30

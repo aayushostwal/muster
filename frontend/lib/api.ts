@@ -19,6 +19,9 @@ import type {
   Message,
   Project,
   ProjectInput,
+  ProjectTaskTag,
+  PrDeliveryEligibility,
+  PrDeliveryRun,
   RunAttempt,
   TaskEvent,
   TaskInvocation,
@@ -90,6 +93,21 @@ export const api = {
   updateProject: (id: string, body: Partial<ProjectInput>) =>
     request<Project>(`/api/projects/${id}`, { method: "PATCH", ...json(body) }),
   deleteProject: (id: string) => request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  projectTaskTags: (projectId: string) =>
+    request<ListResponse<ProjectTaskTag>>(`/api/projects/${projectId}/task-tags`),
+  createProjectTaskTag: (projectId: string, body: { name: string; color?: string | null }) =>
+    request<ProjectTaskTag>(`/api/projects/${projectId}/task-tags`, {
+      method: "POST",
+      ...json(body),
+    }),
+  updateProjectTaskTag: (
+    projectId: string,
+    tagId: string,
+    body: { name?: string; color?: string | null },
+  ) => request<ProjectTaskTag>(`/api/projects/${projectId}/task-tags/${tagId}`, {
+    method: "PATCH",
+    ...json(body),
+  }),
 
   tasks: (projectId: string) =>
     request<ListResponse<Task>>(`/api/projects/${projectId}/tasks`),
@@ -110,7 +128,7 @@ export const api = {
     },
   ) => request<Task>(`/api/projects/${projectId}/tasks`, { method: "POST", ...json(body) }),
   deleteTask: (id: string) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
-  taskAction: (id: string, action: "cancel" | "restart" | "retry-now") =>
+  taskAction: (id: string, action: "cancel" | "restart" | "retry-now" | "complete") =>
     request<Task>(`/api/tasks/${id}/${action}`, { method: "POST" }),
   updateTaskBackend: (id: string, backend: AgentBackend) =>
     request<Task>(`/api/tasks/${id}/backend`, { method: "PATCH", ...json({ backend }) }),
@@ -143,6 +161,34 @@ export const api = {
     request<ListResponse<TaskInvocation>>(`/api/tasks/${id}/invocations`),
   taskEvents: (id: string) =>
     request<ListResponse<TaskEvent>>(`/api/tasks/${id}/events`),
+  prDeliveryEligibility: (id: string) =>
+    request<PrDeliveryEligibility>(`/api/tasks/${id}/pr-delivery/eligibility`),
+  prDeliveryRuns: (id: string) =>
+    request<ListResponse<PrDeliveryRun>>(`/api/tasks/${id}/pr-delivery`),
+  preparePrDelivery: (
+    id: string,
+    body: { base_branch?: string; remote_name?: string; draft?: boolean },
+  ) => request<PrDeliveryRun>(`/api/tasks/${id}/pr-delivery/prepare`, {
+    method: "POST",
+    ...json(body),
+  }),
+  confirmPrDelivery: (
+    id: string,
+    runId: string,
+    body: { commit_message?: string; pr_title?: string; pr_body?: string; draft?: boolean },
+  ) => request<PrDeliveryRun>(`/api/tasks/${id}/pr-delivery/${runId}/confirm`, {
+    method: "POST",
+    ...json(body),
+  }),
+  cancelPrDelivery: (id: string, runId: string) =>
+    request<PrDeliveryRun>(`/api/tasks/${id}/pr-delivery/${runId}/cancel`, { method: "POST" }),
+  syncPrDelivery: (id: string, runId: string) =>
+    request<PrDeliveryRun>(`/api/tasks/${id}/pr-delivery/${runId}/sync`, { method: "POST" }),
+  completeWithoutPr: (id: string, reason: string) =>
+    request<PrDeliveryRun>(`/api/tasks/${id}/pr-delivery/complete-without-pr`, {
+      method: "POST",
+      ...json({ reason }),
+    }),
 
   directories: (projectId: string) =>
     request<ListResponse<DirectoryBinding>>(`/api/projects/${projectId}/directories`),

@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 /** Matches a trailing `/query` token, mirroring the `@project` mention pattern. */
 export const SLASH_PATTERN = /(?:^|\s)\/([^\s]*)$/;
 
-export type SlashCommandKind = "agent" | "skill";
+export type SlashCommandKind = "action" | "agent" | "skill";
 
 export interface SlashCommandItem {
   id: string;
@@ -26,13 +26,21 @@ export function useSlashCommands(query: string | null) {
   const skills = useQuery({ queryKey: ["skills"], queryFn: api.skills, enabled: query !== null });
 
   const items = useMemo<SlashCommandItem[]>(() => {
+    const actionItems: SlashCommandItem[] = [
+      {
+        id: "action-pr",
+        kind: "action",
+        name: "pr",
+        description: "Inspect task changes and prepare a pull request confirmation",
+      },
+    ];
     const agentItems = (agents.data?.items ?? [])
       .filter((agent) => agent.enabled)
       .map((agent) => ({ id: agent.id, kind: "agent" as const, name: agent.name, description: agent.description }));
     const skillItems = (skills.data?.items ?? [])
       .filter((skill) => skill.enabled)
       .map((skill) => ({ id: skill.id, kind: "skill" as const, name: skill.name, description: skill.description }));
-    return [...agentItems, ...skillItems].sort((a, b) => a.name.localeCompare(b.name));
+    return [...actionItems, ...agentItems, ...skillItems].sort((a, b) => a.name.localeCompare(b.name));
   }, [agents.data?.items, skills.data?.items]);
 
   const suggestions = useMemo(() => {

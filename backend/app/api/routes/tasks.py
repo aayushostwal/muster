@@ -57,6 +57,12 @@ async def list_tasks(
 @router.post("/projects/{project_id}/tasks", status_code=201, response_model=TaskRead)
 async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession = Depends(get_db)):
     project = await _get_project_or_404(db, project_id)
+    from app.services import task_tags
+
+    try:
+        await task_tags.ensure_assignable_tags(db, project_id, body.tags)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     agent = await db.get(AgentProfile, body.agent_id) if body.agent_id else None
     if body.agent_id and agent is None:
         raise HTTPException(status_code=404, detail="Agent profile not found")
@@ -125,6 +131,32 @@ async def delete_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def cancel_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     task = await _get_task_or_404(db, task_id)
     await process_manager.cancel(task_id)
+    await db.refresh(task)
+    return task
+
+
+@router.post("/tasks/{task_id}/complete", response_model=TaskRead)
+async def complete_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """"Mark conversation complete" is the only path that marks a task `done`.
+
+    A clean agent process exit never does this on its own (see
+    ProcessManager._on_process_exit) -- it hands the task back to the user as
+    `waiting_on_you` instead. This endpoint is how the user explicitly signs
+    off. Safe to call from any status: if a process is still running it's
+    stopped first, then the task is finalized as `done`.
+
+    """
+    task = await _get_task_or_404(db, task_id)
+    project = await _get_project_or_404(db, task.project_id)
+    from app.services import pr_delivery
+
+    gate = await pr_delivery.get_completion_gate(db, task, project)
+    if not gate["satisfied"]:
+        raise HTTPException(
+            status_code=422,
+            detail=gate["reason"] or "This project's PR policy must be satisfied first.",
+        )
+    await process_manager.complete(task_id)
     await db.refresh(task)
     return task
 
@@ -209,7 +241,22 @@ async def update_task_tags(
     task_id: uuid.UUID, body: TaskTagsUpdate, db: AsyncSession = Depends(get_db)
 ):
     task = await _get_task_or_404(db, task_id)
-    task.tags = body.tags
+    from app.services import task_tags
+
+    current = list(task.tags or [])
+    current_system = [tag for tag in current if tag.casefold() in task_tags.SYSTEM_TAG_NAMES]
+    requested_system = [tag for tag in body.tags if tag.casefold() in task_tags.SYSTEM_TAG_NAMES]
+    additions = {
+        tag.casefold() for tag in requested_system
+    } - {tag.casefold() for tag in current_system}
+    if additions:
+        raise HTTPException(status_code=422, detail="System workflow tags cannot be assigned manually")
+    assignable = [tag for tag in body.tags if tag.casefold() not in task_tags.SYSTEM_TAG_NAMES]
+    try:
+        await task_tags.ensure_assignable_tags(db, task.project_id, assignable)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    task.tags = [*assignable, *current_system]
     await db.commit()
     await db.refresh(task)
     return task
@@ -255,12 +302,20 @@ async def create_message(
         media=body.media,
     )
     db.add(message)
-    # A new user message always resumes a waiting/done/failed task.
-    if task.status in (TaskStatus.waiting_on_you, TaskStatus.done, TaskStatus.failed):
-        task.status = TaskStatus.queued
+    if any(
+        isinstance(item, dict)
+        and item.get("kind") == "magic_canvas"
+        and bool(item.get("content"))
+        for item in body.media
+    ):
+        from app.services.task_tags import add_system_tag
+
+        await add_system_tag(db, task, "Canvas")
     await db.commit()
     await db.refresh(message)
-    await process_manager.trigger(task_id)
+    # ProcessManager owns the reopen + spawn transition under the same
+    # per-task lock as cancel, complete, retry, and process exit.
+    await process_manager.resume(task_id)
     return message
 
 

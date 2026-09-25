@@ -57,6 +57,22 @@ class FailureClass(str, enum.Enum):
     other = "other"
 
 
+class PrPolicy(str, enum.Enum):
+    manual = "manual"
+    preferred = "preferred"
+    required = "required"
+
+
+class PrDeliveryStatus(str, enum.Enum):
+    awaiting_confirmation = "awaiting_confirmation"
+    validating = "validating"
+    pushing = "pushing"
+    creating_pr = "creating_pr"
+    succeeded = "succeeded"
+    failed = "failed"
+    rejected = "rejected"
+
+
 class Project(Base):
     __tablename__ = "projects"
 
@@ -71,6 +87,15 @@ class Project(Base):
     primary_directory_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("directory_resources.id", ondelete="SET NULL"), nullable=True
     )
+    pr_policy: Mapped[PrPolicy] = mapped_column(
+        Enum(PrPolicy, name="pr_policy"), default=PrPolicy.preferred
+    )
+    pr_provider: Mapped[str] = mapped_column(String(30), default="github")
+    pr_remote_name: Mapped[str] = mapped_column(String(100), default="origin")
+    pr_branch_prefix: Mapped[str] = mapped_column(String(100), default="muster/")
+    pr_base_branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    pr_validation_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pr_draft_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -89,6 +114,12 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     tasks: Mapped[list["Task"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    task_tags: Mapped[list["ProjectTaskTag"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="ProjectTaskTag.name"
+    )
+    pr_delivery_runs: Mapped[list["PrDeliveryRun"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     cron_jobs: Mapped[list["CronJob"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -144,6 +175,28 @@ class ToolBinding(Base):
     project: Mapped[Project] = relationship(back_populates="tools")
 
 
+class ProjectTaskTag(Base):
+    """Project-scoped tag catalog; task assignments remain in Task.tags for compatibility."""
+
+    __tablename__ = "project_task_tags"
+    __table_args__ = (
+        UniqueConstraint("project_id", "normalized_name", name="uq_project_task_tag_name"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(32), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), default="custom")
+    color: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    project: Mapped[Project] = relationship(back_populates="task_tags")
+
+
 class ProjectArtifact(Base):
     __tablename__ = "project_artifacts"
 
@@ -167,10 +220,21 @@ class Task(Base):
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, name="task_status"), default=TaskStatus.queued, index=True
     )
+    # Only meaningful while status == waiting_on_you; explains *why* the task
+    # is waiting so the UI can show a real blocker instead of a guess. One of
+    # "blocking_question" (the agent asked something), "tool_permission" (a
+    # tool call needs an approval decision), or "awaiting_review" (the turn
+    # ended cleanly but there's no verified delivery artifact yet -- see
+    # ProcessManager._on_process_exit). Cleared (None) on every other status.
+    attention_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     fallback_models: Mapped[list] = mapped_column(JSON, default=list)
     tags: Mapped[list] = mapped_column(JSON, default=list)
+    git_baseline_dirty_paths: Mapped[list] = mapped_column(JSON, default=list)
+    git_baseline_captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     thinking_level: Mapped[str] = mapped_column(String(20), default="medium")
     agent_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("agent_profiles.id", ondelete="SET NULL"), nullable=True
@@ -186,7 +250,6 @@ class Task(Base):
     cron_job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("cron_jobs.id", ondelete="SET NULL"), nullable=True
     )
-
     project: Mapped[Project] = relationship(back_populates="tasks")
     messages: Mapped[list["Message"]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="Message.created_at"
@@ -205,6 +268,9 @@ class Task(Base):
     )
     tool_approval_requests: Mapped[list["ToolApprovalRequest"]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="ToolApprovalRequest.created_at"
+    )
+    pr_delivery_runs: Mapped[list["PrDeliveryRun"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan", order_by="PrDeliveryRun.created_at"
     )
 
 
@@ -399,6 +465,49 @@ class ToolApprovalRequest(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     task: Mapped[Task] = relationship(back_populates="tool_approval_requests")
+
+
+class PrDeliveryRun(Base):
+    """Durable state for the explicitly confirmed task-to-PR workflow."""
+
+    __tablename__ = "pr_delivery_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
+    status: Mapped[PrDeliveryStatus] = mapped_column(
+        Enum(PrDeliveryStatus, name="pr_delivery_status"),
+        default=PrDeliveryStatus.awaiting_confirmation,
+        index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(30), default="github")
+    repository: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    remote_name: Mapped[str] = mapped_column(String(100), default="origin")
+    head_branch: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    base_branch: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    draft: Mapped[bool] = mapped_column(Boolean, default=False)
+    file_paths: Mapped[list] = mapped_column(JSON, default=list)
+    excluded_paths: Mapped[list] = mapped_column(JSON, default=list)
+    commit_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pr_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    pr_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_command: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pr_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pr_state: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    task: Mapped[Task] = relationship(back_populates="pr_delivery_runs")
+    project: Mapped[Project] = relationship(back_populates="pr_delivery_runs")
 
 
 class Message(Base):

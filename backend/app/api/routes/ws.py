@@ -2,9 +2,14 @@
 
 Per-task feed (`/ws/tasks/{task_id}`), one JSON event per message:
     {"type": "message", "message": {...Message...}}
-    {"type": "status", "status": "running"}
+    {"type": "status", "status": "running", "attention_reason": null}
     {"type": "run_attempt", "attempt": {...TaskRunAttempt...}}
     {"type": "token_usage", "used": 12000, "limit": 200000}
+
+`attention_reason` is only non-null when `status == "waiting_on_you"`: one of
+"blocking_question", "tool_permission", or "awaiting_review" (a clean process
+exit with no verified delivery signal -- see process_manager.py's
+`_on_process_exit` for why a clean exit does not become "done" on its own).
 
 Global feed (`/ws/events`), for cross-task notifications regardless of which
 task (if any) a client currently has open:
@@ -99,7 +104,7 @@ async def broadcast(task_id: uuid.UUID, event: dict) -> None:
             _connections.pop(task_id, None)
 
     if event.get("type") == "status":
-        await _broadcast_status_globally(task_id, event["status"])
+        await _broadcast_status_globally(task_id, event["status"], event.get("attention_reason"))
 
 
 async def broadcast_global(event: dict) -> None:
@@ -116,7 +121,9 @@ async def broadcast_global(event: dict) -> None:
         _global_connections.discard(ws)
 
 
-async def _broadcast_status_globally(task_id: uuid.UUID, status: str) -> None:
+async def _broadcast_status_globally(
+    task_id: uuid.UUID, status: str, attention_reason: str | None = None
+) -> None:
     if not _global_connections:
         return  # avoid the DB round-trip when nobody is listening
     async with SessionLocal() as db:
@@ -134,5 +141,6 @@ async def _broadcast_status_globally(task_id: uuid.UUID, status: str) -> None:
             "task_title": task.title,
             "project_name": task.project.name if task.project else None,
             "status": status,
+            "attention_reason": attention_reason,
         }
     )

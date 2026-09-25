@@ -40,6 +40,7 @@ async def test_restart_clears_resume_state_preserves_history_and_supersedes_appr
             title="Restart me",
             initial_prompt="This must be the first prompt in the new session.",
             status=TaskStatus.done,
+            attention_reason="awaiting_review",
             backend=AgentBackend.claude_code,
             session_id="old-native-session",
             started_at=now,
@@ -82,6 +83,7 @@ async def test_restart_clears_resume_state_preserves_history_and_supersedes_appr
 
     assert restarted is not None
     assert restarted.status == TaskStatus.queued
+    assert restarted.attention_reason is None
     assert restarted.session_id is None
     assert restarted.started_at is None
     assert restarted.completed_at is None

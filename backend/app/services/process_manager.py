@@ -87,6 +87,11 @@ class RunningProcess:
     cancel_requested: bool = False
     restart_requested: bool = False
     switch_requested: bool = False
+    # Set by cancel()/complete() to tell _on_process_exit which terminal
+    # status to finalize as once the (possibly just-terminated) process
+    # actually exits, instead of running the normal done/failed/retry
+    # classification. None means "let _on_process_exit decide normally".
+    pending_final_status: TaskStatus | None = None
     pending_tool_calls: dict[str, tuple[str, dict]] = field(default_factory=dict)
     permission_requests: set[str] = field(default_factory=set)
     watchdog_task: asyncio.Task | None = None
@@ -114,12 +119,39 @@ class ProcessManager:
     # -- public API (see docs/SPEC.md "Integration seams") ------------------
 
     async def trigger(self, task_id: uuid.UUID) -> None:
-        async with self._lock_for(task_id):
-            running = self._running.get(task_id)
-            if running is not None and running.process.returncode is None:
-                await self._deliver_to_running(task_id, running)
-                return
-            await self._spawn(task_id)
+        await self._trigger(task_id, reopen=False)
+
+    async def resume(self, task_id: uuid.UUID) -> None:
+        """Resume a task after a newly persisted user message.
+
+        Reopening and spawning share the same lifecycle lock, so an explicit
+        cancel/complete cannot be lost between the route's DB commit and the
+        next subprocess start.
+        """
+        await self._trigger(task_id, reopen=True)
+
+    async def _trigger(self, task_id: uuid.UUID, *, reopen: bool) -> None:
+        while True:
+            reader_task: asyncio.Task | None = None
+            async with self._lock_for(task_id):
+                running = self._running.get(task_id)
+                if running is None:
+                    if reopen:
+                        await self._reopen_for_follow_up(task_id)
+                    await self._spawn(task_id)
+                    return
+                if running.pending_final_status is None and running.process.returncode is None:
+                    if await self._deliver_to_running(task_id, running):
+                        return
+                # Wait outside the lock for the old turn's exit handler to
+                # commit its status and release this task's lifecycle slot.
+                # Otherwise it can overwrite a newly resumed follow-up turn.
+                reader_task = running.reader_task
+
+            if reader_task is None or reader_task is asyncio.current_task():
+                await asyncio.sleep(0)
+            else:
+                await asyncio.shield(reader_task)
 
     async def reconcile_interrupted_tasks(self) -> int:
         """Move database-only `running` rows to an actionable state on startup."""
@@ -181,29 +213,27 @@ class ProcessManager:
             await asyncio.gather(*readers, return_exceptions=True)
 
     async def cancel(self, task_id: uuid.UUID) -> None:
-        pending = self._pending_retries.pop(task_id, None)
-        if pending is not None:
-            pending.cancel()
+        await self._finish_as(task_id, TaskStatus.cancelled)
 
-        running = self._running.get(task_id)
-        if running is not None:
-            # Mark cancellation intent; _on_process_exit (driven by the
-            # stdout reader's natural EOF once the process dies) reads this
-            # flag and finalizes the Task as `cancelled` instead of running
-            # its normal done/failed/retry classification.
-            running.cancel_requested = True
-            if running.process.returncode is None:
-                asyncio.create_task(self._terminate_process_tree(running.process))
-            return
+    async def complete(self, task_id: uuid.UUID) -> None:
+        """Explicitly close out a task at the user's request ("Mark conversation
+        complete"). This is the ONLY path that marks a task `done` today.
 
-        # No live process (task already finished, or is waiting_on_you /
-        # between retries): finalize directly.
-        await self._set_status(task_id, TaskStatus.cancelled, completed=True)
+        Extension point: a clean agent-process exit does NOT call this. If
+        the app later gains a trusted, structured delivery signal (e.g. a
+        verified PR merge webhook, or a signed Canvas "delivered" event),
+        `_on_process_exit`'s clean-exit branch could invoke `complete()`
+        automatically once that signal is present and verified. Until then,
+        completion must stay an explicit user action -- never infer it from
+        assistant prose or a bare zero exit code.
+        """
+        await self._finish_as(task_id, TaskStatus.done)
 
     async def retry_now(self, task_id: uuid.UUID) -> None:
-        pending = self._pending_retries.pop(task_id, None)
-        if pending is not None:
-            pending.cancel()
+        async with self._lock_for(task_id):
+            pending = self._pending_retries.pop(task_id, None)
+            if pending is not None:
+                pending.cancel()
         await self.trigger(task_id)
 
     async def restart_from_beginning(self, task_id: uuid.UUID) -> None:
@@ -221,6 +251,10 @@ class ProcessManager:
 
             running = self._running.get(task_id)
             if running is not None:
+                if running.pending_final_status is not None:
+                    # A cancel/complete click won the lifecycle race. Do not
+                    # reinterpret that explicit outcome as a restart.
+                    return
                 # _on_process_exit must not classify this intentional stop as a
                 # user cancellation or schedule a retry before the fresh run.
                 running.restart_requested = True
@@ -240,6 +274,7 @@ class ProcessManager:
                     return
 
                 task.status = TaskStatus.queued
+                task.attention_reason = None
                 task.session_id = None
                 task.started_at = None
                 task.completed_at = None
@@ -308,6 +343,10 @@ class ProcessManager:
 
             running = self._running.get(task_id)
             if running is not None:
+                if running.pending_final_status is not None:
+                    # Preserve the first explicit terminal action under rapid
+                    # clicks instead of switching a task while it is closing.
+                    return
                 # Prevent normal exit classification while the old runtime is
                 # intentionally replaced by a fresh backend invocation.
                 running.switch_requested = True
@@ -336,6 +375,7 @@ class ProcessManager:
                 task.fallback_models = []
                 task.session_id = None
                 task.status = TaskStatus.queued
+                task.attention_reason = None
                 task.completed_at = None
 
                 pending_approvals = (
@@ -413,9 +453,51 @@ class ProcessManager:
                 return
             await process.wait()
 
+    async def _finish_as(self, task_id: uuid.UUID, status: TaskStatus) -> None:
+        """Stop a turn and return only after its Task reaches a final state.
+
+        The first terminal action wins if multiple cancel/complete requests
+        arrive while one process is exiting. Every caller waits for the same
+        reader, so an action response cannot expose stale `running` state.
+        """
+        reader_task: asyncio.Task | None = None
+        async with self._lock_for(task_id):
+            pending = self._pending_retries.pop(task_id, None)
+            if pending is not None:
+                pending.cancel()
+
+            running = self._running.get(task_id)
+            if running is None:
+                async with SessionLocal() as db:
+                    task = await db.get(Task, task_id)
+                    if task is None or task.status in (TaskStatus.done, TaskStatus.cancelled):
+                        # Terminal actions are idempotent. Once a concurrent
+                        # complete/cancel wins, a later rapid click cannot
+                        # rewrite that outcome.
+                        return
+                await self._set_status(task_id, status, completed=True)
+                return
+            if running.pending_final_status is None:
+                running.pending_final_status = status
+                self._terminate(running)
+            reader_task = running.reader_task
+
+        if reader_task is not None and reader_task is not asyncio.current_task():
+            await asyncio.shield(reader_task)
+
+    @staticmethod
+    def _terminate(running: RunningProcess) -> None:
+        if running.process.returncode is not None:
+            return
+        try:
+            running.process.terminate()
+        except ProcessLookupError:
+            return
+        asyncio.create_task(ProcessManager._force_kill_later(running.process))
+
     # -- spawn / continue -----------------------------------------------
 
-    async def _deliver_to_running(self, task_id: uuid.UUID, running: RunningProcess) -> None:
+    async def _deliver_to_running(self, task_id: uuid.UUID, running: RunningProcess) -> bool:
         """Best-effort: forward the newest user message to a live process's stdin.
 
         Both bundled backends are documented (docs/SPEC.md) as single-shot
@@ -427,19 +509,59 @@ class ProcessManager:
         next time trigger() spawns a fresh invocation for this task.
         """
         prompt = await self._latest_user_prompt(task_id)
-        if prompt is None or running.process.stdin is None:
-            return
+        if (
+            prompt is None
+            or running.process.stdin is None
+            or running.process.stdin.is_closing()
+        ):
+            return False
         try:
             running.process.stdin.write((prompt + "\n").encode("utf-8"))
             await running.process.stdin.drain()
+            return True
         except (ConnectionResetError, BrokenPipeError, RuntimeError):
             logger.debug("stdin delivery failed for task %s; will resume next trigger", task_id)
+            return False
+
+    async def _reopen_for_follow_up(self, task_id: uuid.UUID) -> None:
+        """Clear a terminal/attention state immediately before a follow-up spawn.
+
+        The caller holds the task lifecycle lock. Keeping this transition in
+        ProcessManager prevents route-level writes from racing cancel,
+        complete, process exit, or a scheduled retry.
+        """
+        changed = False
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                return
+            if task.status in (
+                TaskStatus.waiting_on_you,
+                TaskStatus.done,
+                TaskStatus.failed,
+                TaskStatus.cancelled,
+            ):
+                task.status = TaskStatus.queued
+                task.attention_reason = None
+                task.completed_at = None
+                await db.commit()
+                changed = True
+        if changed:
+            await broadcast(
+                task_id,
+                {"type": "status", "status": TaskStatus.queued.value, "attention_reason": None},
+            )
 
     async def _spawn(self, task_id: uuid.UUID, initial_prompt: str | None = None) -> None:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None:
                 logger.warning("trigger() called for unknown task %s", task_id)
+                return
+            if task.status in (TaskStatus.done, TaskStatus.cancelled):
+                # A delayed retry or trigger may already have been waiting on
+                # the lifecycle lock when the user completed/cancelled. Never
+                # resurrect an explicit terminal state.
                 return
             project = await self._load_project(db, task.project_id)
             if project is None:
@@ -469,6 +591,17 @@ class ProcessManager:
                 await broadcast(task_id, {"type": "status", "status": TaskStatus.failed.value})
                 return
 
+            # Capture the working-tree baseline once, before the task's first
+            # subprocess can mutate files. A failed/unsupported capture stays
+            # explicitly unknown (None) so PR delivery fails closed.
+            if task.git_baseline_captured_at is None:
+                from app.services.pr_delivery import capture_git_baseline
+
+                baseline = await capture_git_baseline(bindings.primary_directory)
+                if baseline is not None:
+                    task.git_baseline_dirty_paths = baseline
+                    task.git_baseline_captured_at = datetime.now(timezone.utc)
+
             if task.session_id:
                 prompt = await self._latest_user_prompt_db(db, task_id) or task.initial_prompt
                 cmd = adapter.resume_command(task, project, bindings, secrets, task.session_id, prompt)
@@ -479,6 +612,8 @@ class ProcessManager:
                 await self._append_transcript(task_id, "user", prompt)
 
             task.status = TaskStatus.running
+            task.attention_reason = None
+            task.completed_at = None
             if task.started_at is None:
                 task.started_at = datetime.now(timezone.utc)
             previous = await db.execute(select(TaskInvocation).where(TaskInvocation.task_id == task_id))
@@ -497,7 +632,10 @@ class ProcessManager:
             await db.refresh(invocation)
             invocation_id = invocation.id
 
-        await broadcast(task_id, {"type": "status", "status": TaskStatus.running.value})
+        await broadcast(
+            task_id,
+            {"type": "status", "status": TaskStatus.running.value, "attention_reason": None},
+        )
 
         runtime_env = {**os.environ, **secrets}
         runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd.argv))
@@ -917,7 +1055,7 @@ class ProcessManager:
             await self._persist_and_broadcast_message(
                 task_id, MessageSender.agent, event.text, is_blocking_question=True
             )
-            await self._set_status(task_id, TaskStatus.waiting_on_you)
+            await self._set_status(task_id, TaskStatus.waiting_on_you, attention_reason="blocking_question")
         elif isinstance(event, PermissionRequest):
             await self._handle_permission_request(task_id, running, event)
         elif isinstance(event, SessionId):
@@ -1025,7 +1163,7 @@ class ProcessManager:
             f"Permission required to run {request.tool_name}. Approve or deny the request below.",
             is_blocking_question=True,
         )
-        await self._set_status(task_id, TaskStatus.waiting_on_you)
+        await self._set_status(task_id, TaskStatus.waiting_on_you, attention_reason="tool_permission")
         await broadcast(
             task_id,
             {"type": "tool_approval", "approval": _serialize_tool_approval(approval)},
@@ -1055,6 +1193,21 @@ class ProcessManager:
 
     # -- exit / retry handling ---------------------------------------------
 
+    async def _broadcast_pr_hint(self, task_id: uuid.UUID) -> None:
+        """Emit a read-only suggestion only when structured git state is eligible."""
+        from app.services.pr_delivery import eligibility_hint
+
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is None:
+                return
+            project = await db.get(Project, task.project_id)
+            if project is None:
+                return
+            hint = await eligibility_hint(db, task, project)
+        if hint is not None:
+            await broadcast(task_id, {"type": "pr_suggestion", **hint})
+
     async def _on_process_exit(
         self, task_id: uuid.UUID, process: asyncio.subprocess.Process, running: RunningProcess
     ) -> None:
@@ -1067,16 +1220,23 @@ class ProcessManager:
         if running.watchdog_task is not None and running.watchdog_task is not asyncio.current_task():
             running.watchdog_task.cancel()
         _cleanup_temp_paths(running.temp_paths)
-        self._running.pop(task_id, None)
 
         async with SessionLocal() as db:
             invocation = await db.get(TaskInvocation, running.invocation_id)
             if invocation is not None:
                 invocation.status = (
                     "cancelled"
-                    if running.cancel_requested or running.restart_requested or running.switch_requested
+                    if (
+                        running.cancel_requested
+                        or running.restart_requested
+                        or running.switch_requested
+                        or running.pending_final_status == TaskStatus.cancelled
+                    )
                     else "completed"
-                    if exit_code == 0 and running.failure_reason is None
+                    if (
+                        (exit_code == 0 and running.failure_reason is None)
+                        or running.pending_final_status == TaskStatus.done
+                    )
                     else "failed"
                 )
                 invocation.completed_at = datetime.now(timezone.utc)
@@ -1085,78 +1245,114 @@ class ProcessManager:
         if invocation is not None:
             await broadcast(task_id, {"type": "invocation", "invocation": _serialize_invocation(invocation)})
 
-        if running.cancel_requested:
-            await self._set_status(task_id, TaskStatus.cancelled, completed=True)
-            return
-
         if running.restart_requested:
             # restart_from_beginning owns the next status transition and spawn.
+            # This check intentionally precedes the lifecycle lock: restart
+            # waits for this reader while holding that lock.
+            if self._running.get(task_id) is running:
+                self._running.pop(task_id, None)
             return
 
         if running.switch_requested:
-            # switch_backend owns the next status transition and spawn.
+            # switch_backend likewise owns the replacement invocation.
+            if self._running.get(task_id) is running:
+                self._running.pop(task_id, None)
             return
 
-        if running.blocking_question_hit:
-            # Status is already waiting_on_you; the user's reply resumes it.
-            return
+        # Everything below decides the Task's next status. Hold the per-task
+        # lock so this can never interleave with a concurrent cancel()/
+        # complete()/restart()/trigger() for the same task (e.g. a user
+        # rapid-clicking between actions right as the process exits).
+        async with self._lock_for(task_id):
+            tracked = self._running.get(task_id)
+            if tracked is not None and tracked is not running:
+                # A newer invocation already owns the task. This stale reader
+                # must not overwrite the newer invocation's state.
+                return
+            if tracked is running:
+                self._running.pop(task_id, None)
 
-        if exit_code == 0 and running.failure_reason is None:
-            await self._set_status(task_id, TaskStatus.done, completed=True)
-            return
+            if running.pending_final_status is not None:
+                # An explicit user action (cancel() or complete()) already
+                # decided this task's fate; honor it over any exit-code-based
+                # classification below.
+                await self._set_status(task_id, running.pending_final_status, completed=True)
+                return
 
-        stderr_tail = bytes(running.stderr_buf).decode("utf-8", errors="replace")
-        failure_class = (
-            FailureClass.other
-            if running.failure_reason is not None
-            else retry.classify(exit_code, stderr_tail)
-        )
+            if running.blocking_question_hit:
+                # Status is already waiting_on_you; the user's reply resumes it.
+                return
 
-        async with SessionLocal() as db:
-            existing = await db.execute(
-                select(TaskRunAttempt).where(TaskRunAttempt.task_id == task_id)
+            if exit_code == 0 and running.failure_reason is None:
+                # NOTE(production-hardening): a clean process exit means the
+                # CLI turn finished without error -- it does NOT mean the
+                # user's request was actually delivered. There is no trusted,
+                # structured signal here (a verified PR, a signed Canvas
+                # artifact, etc.) that proves delivery, so we deliberately do
+                # NOT auto-mark the task `done`. Hand control back to the
+                # user instead; they close it out via
+                # POST /tasks/{id}/complete (ProcessManager.complete()), or a
+                # future trusted-artifact check could call complete() here
+                # once such a signal exists and is verified. Never infer
+                # completion from assistant prose.
+                await self._set_status(
+                    task_id, TaskStatus.waiting_on_you, attention_reason="awaiting_review"
+                )
+                await self._broadcast_pr_hint(task_id)
+                return
+
+            stderr_tail = bytes(running.stderr_buf).decode("utf-8", errors="replace")
+            failure_class = (
+                FailureClass.other
+                if running.failure_reason is not None
+                else retry.classify(exit_code, stderr_tail)
             )
-            attempt_number = len(existing.scalars().all()) + 1
 
-        can_retry = (
-            failure_class == FailureClass.transient and attempt_number <= settings.retry_max_attempts
-        )
-        backoff_seconds = retry.compute_backoff(attempt_number - 1) if can_retry else None
-        error_message = (
-            running.failure_reason
-            or stderr_tail[-_STDERR_TAIL_LIMIT:]
-            or f"exited with code {exit_code}"
-        )
+            async with SessionLocal() as db:
+                existing = await db.execute(
+                    select(TaskRunAttempt).where(TaskRunAttempt.task_id == task_id)
+                )
+                attempt_number = len(existing.scalars().all()) + 1
 
-        async with SessionLocal() as db:
-            run_attempt = TaskRunAttempt(
-                task_id=task_id,
-                attempt_number=attempt_number,
-                failure_class=failure_class,
-                error_message=error_message,
-                backoff_seconds=backoff_seconds,
+            can_retry = (
+                failure_class == FailureClass.transient and attempt_number <= settings.retry_max_attempts
             )
-            db.add(run_attempt)
-            sys_message = Message(
-                task_id=task_id,
-                sender=MessageSender.system,
-                content_text=f"Attempt {attempt_number} failed ({failure_class.value}): {error_message}",
+            backoff_seconds = retry.compute_backoff(attempt_number - 1) if can_retry else None
+            error_message = (
+                running.failure_reason
+                or stderr_tail[-_STDERR_TAIL_LIMIT:]
+                or f"exited with code {exit_code}"
             )
-            db.add(sys_message)
-            await db.commit()
-            await db.refresh(run_attempt)
-            await db.refresh(sys_message)
 
-        await self._append_transcript(task_id, "system", sys_message.content_text or "")
-        await broadcast(task_id, {"type": "run_attempt", "attempt": _serialize_run_attempt(run_attempt)})
-        await broadcast(task_id, {"type": "message", "message": _serialize_message(sys_message)})
+            async with SessionLocal() as db:
+                run_attempt = TaskRunAttempt(
+                    task_id=task_id,
+                    attempt_number=attempt_number,
+                    failure_class=failure_class,
+                    error_message=error_message,
+                    backoff_seconds=backoff_seconds,
+                )
+                db.add(run_attempt)
+                sys_message = Message(
+                    task_id=task_id,
+                    sender=MessageSender.system,
+                    content_text=f"Attempt {attempt_number} failed ({failure_class.value}): {error_message}",
+                )
+                db.add(sys_message)
+                await db.commit()
+                await db.refresh(run_attempt)
+                await db.refresh(sys_message)
 
-        if can_retry and backoff_seconds is not None:
-            await self._set_status(task_id, TaskStatus.running)
-            pending = asyncio.create_task(self._delayed_retry(task_id, backoff_seconds))
-            self._pending_retries[task_id] = pending
-        else:
-            await self._set_status(task_id, TaskStatus.failed, completed=True)
+            await self._append_transcript(task_id, "system", sys_message.content_text or "")
+            await broadcast(task_id, {"type": "run_attempt", "attempt": _serialize_run_attempt(run_attempt)})
+            await broadcast(task_id, {"type": "message", "message": _serialize_message(sys_message)})
+
+            if can_retry and backoff_seconds is not None:
+                await self._set_status(task_id, TaskStatus.running)
+                pending = asyncio.create_task(self._delayed_retry(task_id, backoff_seconds))
+                self._pending_retries[task_id] = pending
+            else:
+                await self._set_status(task_id, TaskStatus.failed, completed=True)
 
     async def _delayed_retry(self, task_id: uuid.UUID, backoff_seconds: int) -> None:
         try:
@@ -1168,16 +1364,25 @@ class ProcessManager:
 
     # -- shared helpers -------------------------------------------------
 
-    async def _set_status(self, task_id: uuid.UUID, status: TaskStatus, completed: bool = False) -> None:
+    async def _set_status(
+        self,
+        task_id: uuid.UUID,
+        status: TaskStatus,
+        completed: bool = False,
+        attention_reason: str | None = None,
+    ) -> None:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None:
                 return
             task.status = status
+            # Only ever meaningful for waiting_on_you; every other status
+            # passes None here, which clears a stale reason on the way out.
+            task.attention_reason = attention_reason
             if completed:
                 task.completed_at = datetime.now(timezone.utc)
             await db.commit()
-        await broadcast(task_id, {"type": "status", "status": status.value})
+        await broadcast(task_id, {"type": "status", "status": status.value, "attention_reason": attention_reason})
 
     async def _append_transcript(self, task_id: uuid.UUID, sender: str, text: str) -> None:
         settings.ensure_dirs()
