@@ -106,7 +106,13 @@ Native interactive task terminals are opt-in with
 tasks use the Codex/Claude TUI; cron tasks remain structured. The terminal
 WebSocket is loopback-only and additionally checks
 `MUSTER_TERMINAL_ALLOWED_ORIGINS`. PTY logs are stored beneath
-`~/.muster/data/terminals` with owner-only permissions.
+`~/.muster/data/terminals` with owner-only permissions. Every fresh terminal
+invocation has its own persisted native session ID. Codex history, state
+databases, memories, and daemon control files are isolated beneath the task's
+backend-session directory rather than linked from the user's global Codex home.
+Enabled agent and skill instructions are injected lazily: a turn must invoke
+`/resource-name`; unrelated global instruction bodies are not copied into every
+prompt.
 
 ## Running it
 

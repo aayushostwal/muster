@@ -7,9 +7,10 @@ subprocess command line and how to parse each line of streamed output into a
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Protocol, Union
+import re
 import uuid
+from dataclasses import dataclass, field
+from typing import Protocol, TypeVar, Union
 
 from app.db.models import AgentBackend, Project, Task
 
@@ -95,6 +96,25 @@ class BackendCommand:
     stdin_payload: str | None = None
 
 
+ResourceValue = TypeVar("ResourceValue")
+
+
+def invoked_resources(
+    resources: dict[str, ResourceValue], prompt: str
+) -> dict[str, ResourceValue]:
+    """Return only named resources explicitly referenced as `/name`."""
+
+    return {
+        name: value
+        for name, value in resources.items()
+        if re.search(
+            rf"(?<!\S)/{re.escape(name)}(?=\s|$)",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+    }
+
+
 class AgentBackendAdapter(Protocol):
     """Translation layer between Muster's process manager and a backend CLI."""
 
@@ -130,6 +150,7 @@ class AgentBackendAdapter(Protocol):
         bindings: "AdapterBindings",
         secrets: dict[str, str],
         prompt: str | None = None,
+        session_id: str | None = None,
     ) -> BackendCommand:
         """Build an argv for the backend's native interactive terminal UI."""
         ...
