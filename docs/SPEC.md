@@ -62,12 +62,12 @@ PATCH  /api/mcp-servers/{id}
 DELETE /api/mcp-servers/{id}
 
 GET    /api/agents
-POST   /api/agents                         {name, backend, system_prompt, model?, thinking_level, config?, enabled?}
+POST   /api/agents                         {name, description?, system_prompt, config?, enabled?}
 PATCH  /api/agents/{id}
 DELETE /api/agents/{id}
 
 GET    /api/skills
-POST   /api/skills                         {name, description?, instructions, enabled?}
+POST   /api/skills                         {name, description?, instructions, tags?, enabled?}
 PATCH  /api/skills/{id}
 DELETE /api/skills/{id}
 
@@ -282,6 +282,12 @@ full instruction bodies are added to a backend prompt only when that turn
 explicitly invokes the matching `/resource-name`. This keeps unrelated global
 capabilities from inflating every new task's input context.
 
+Agent profiles are portable instruction sets, not runtime presets. Selecting a
+profile never changes the task backend, model, or thinking level, and the same
+selected or slash-invoked profile is resolved for Claude Code and Codex. Skills
+follow the same cross-runtime invocation behavior. Globally enabled MCP
+connectors are translated into each backend's native configuration format.
+
 Each subprocess starts in its own process group, stdout/stderr are drained
 concurrently with an 8 MiB per-event stream limit, and a watchdog enforces
 startup, idle, and total-runtime deadlines. Stopping a task terminates the
@@ -290,8 +296,8 @@ startup, database rows left `running` by a prior crash are changed to
 `waiting_on_you` and their open invocation is marked `interrupted`.
 
 `switch_backend(task_id, backend)` stops any active invocation, supersedes
-pending runtime-specific approvals, clears the native session id, selected
-agent, and model chain, then starts the destination runtime in a fresh native
+pending runtime-specific approvals, clears the native session id and model
+chain, preserves the portable selected agent, then starts the destination runtime in a fresh native
 session. The first prompt contains the original brief and a bounded handoff of
 the persisted conversation. Existing messages and invocation records remain
 available for audit and are rendered with their original runtime labels.
@@ -599,6 +605,11 @@ and tool policies), `/projects/:id` (project profile and
 capability access), `/projects/:id/board` (task board), and `/tasks/:id`
 (compact chat, activity timeline, multi-agent view, invocation telemetry,
 model/thinking/context controls, and transcript).
+
+Agent and skill registry pages use a compact searchable resource list with an
+adjacent detail inspector instead of a fixed card grid. They support status
+filters, skill tag filters, result counts, and safe Markdown previews. Raw HTML
+is not rendered in agent prompts or skill instructions.
 
 `AppShell` also mounts a route-independent task composer. It resolves one
 required `@project` mention, creates the task with that project's defaults,

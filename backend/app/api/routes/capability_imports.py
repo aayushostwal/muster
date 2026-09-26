@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AgentBackend, AgentProfile, CapabilityImport, GlobalMcpServer, Skill
+from app.db.models import AgentProfile, CapabilityImport, GlobalMcpServer, Skill
 from app.db.session import get_db
 from app.schemas.capability_import import (
     CapabilityDiscoveryResponse,
@@ -97,10 +97,7 @@ def _create_resource(candidate: DiscoveredCapability, target_name: str):
         return AgentProfile(
             name=target_name,
             description=payload["description"],
-            backend=AgentBackend(payload["backend"]),
             system_prompt=payload["system_prompt"],
-            model=payload["model"],
-            thinking_level=payload["thinking_level"],
             config=payload["config"],
             enabled=True,
         )
@@ -109,6 +106,7 @@ def _create_resource(candidate: DiscoveredCapability, target_name: str):
             name=target_name,
             description=payload["description"],
             instructions=payload["instructions"],
+            tags=payload["tags"],
             enabled=True,
         )
     return GlobalMcpServer(
@@ -123,13 +121,11 @@ def _update_resource(resource, candidate: DiscoveredCapability) -> None:
     payload = candidate.payload
     resource.description = payload["description"]
     if candidate.resource_type == "agent":
-        resource.backend = AgentBackend(payload["backend"])
         resource.system_prompt = payload["system_prompt"]
-        resource.model = payload["model"]
-        resource.thinking_level = payload["thinking_level"]
         resource.config = payload["config"]
     elif candidate.resource_type == "skill":
         resource.instructions = payload["instructions"]
+        resource.tags = payload["tags"]
     else:
         resource.config = payload["config"]
 

@@ -109,6 +109,58 @@ async def test_create_task_becomes_queued_and_triggers_process_manager(
 
 
 @pytest.mark.asyncio
+async def test_portable_agent_does_not_override_task_runtime_or_model(
+    override_get_db, db_engine, monkeypatch
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.db.models import AgentBackend, AgentProfile
+    from app.services.process_manager import process_manager
+
+    monkeypatch.setattr(process_manager, "trigger", AsyncMock())
+    app = _build_app(override_get_db)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        project = await client.post(
+            "/api/projects",
+            json={
+                "name": "Portable profiles",
+                "default_backend": "claude_code",
+                "default_model": "claude-default",
+            },
+        )
+        project_id = project.json()["id"]
+        session_local = async_sessionmaker(db_engine, expire_on_commit=False)
+        async with session_local() as db:
+            agent = AgentProfile(
+                name="Legacy Codex reviewer",
+                backend=AgentBackend.codex,
+                model="legacy-codex-model",
+                thinking_level="high",
+                system_prompt="Review carefully.",
+                config={},
+            )
+            db.add(agent)
+            await db.commit()
+            agent_id = str(agent.id)
+
+        response = await client.post(
+            f"/api/projects/{project_id}/tasks",
+            json={
+                "title": "Use portable agent",
+                "initial_prompt": "Review this change",
+                "agent_id": agent_id,
+                "backend": "claude_code",
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["agent_id"] == agent_id
+    assert response.json()["backend"] == "claude_code"
+    assert response.json()["model"] == "claude-default"
+    assert response.json()["thinking_level"] == "medium"
+
+
+@pytest.mark.asyncio
 async def test_delete_task_stops_active_run_and_removes_task(
     override_get_db, monkeypatch
 ):
