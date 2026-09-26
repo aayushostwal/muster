@@ -324,10 +324,15 @@ class AgentProfile(Base):
     id: Mapped[uuid.UUID] = _uuid_col()
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
+    # Legacy runtime defaults are retained as nullable columns so existing
+    # installations can roll back without losing data. Muster no longer uses
+    # them when selecting or invoking a portable agent profile.
+    backend: Mapped[AgentBackend | None] = mapped_column(
+        Enum(AgentBackend, name="agent_backend"), nullable=True
+    )
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    thinking_level: Mapped[str] = mapped_column(String(20), default="medium")
+    thinking_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -343,6 +348,7 @@ class Skill(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

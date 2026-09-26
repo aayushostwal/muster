@@ -12,9 +12,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.api.routes import projects, tools
 from app.db.models import (
     AgentBackend,
+    AgentProfile,
+    GlobalMcpServer,
     GlobalTool,
     Project,
     ProjectCapabilityOverride,
+    Skill,
     Task,
     TaskStatus,
     ToolApprovalRequest,
@@ -139,4 +142,50 @@ async def test_global_tool_rules_are_inherited_and_can_be_disabled(db_engine):
         )
         await db.commit()
         bindings = await process_manager._bindings_for(db, loaded, task)
-        assert bindings.tool_rules == []
+    assert bindings.tool_rules == []
+
+
+@pytest.mark.asyncio
+async def test_agents_skills_and_mcp_are_portable_across_runtimes(db_engine):
+    session_local = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with session_local() as db:
+        project = Project(name="Portable", default_backend=AgentBackend.claude_code)
+        agent = AgentProfile(
+            name="Reviewer",
+            description="Reviews changes",
+            backend=AgentBackend.codex,  # legacy value must not scope the profile
+            system_prompt="Review carefully.",
+            config={},
+        )
+        skill = Skill(
+            name="Release",
+            instructions="Validate rollback.",
+            tags=["deployment"],
+        )
+        connector = GlobalMcpServer(
+            name="docs",
+            config={"transport": "http", "url": "https://mcp.example.test"},
+        )
+        db.add_all([project, agent, skill, connector])
+        await db.flush()
+        task = Task(
+            project_id=project.id,
+            title="Portable task",
+            initial_prompt="/Reviewer /Release check this",
+            backend=AgentBackend.claude_code,
+            agent_id=agent.id,
+        )
+        db.add(task)
+        await db.commit()
+
+        loaded = await process_manager._load_project(db, project.id)
+        assert loaded is not None
+        claude_bindings = await process_manager._bindings_for(db, loaded, task)
+        task.backend = AgentBackend.codex
+        codex_bindings = await process_manager._bindings_for(db, loaded, task)
+
+    for bindings in (claude_bindings, codex_bindings):
+        assert bindings.selected_agent_prompt == "Review carefully."
+        assert bindings.agent_profiles["Reviewer"]["prompt"] == "Review carefully."
+        assert bindings.skills == {"Release": "Validate rollback."}
+        assert bindings.mcp_servers["docs"]["url"] == "https://mcp.example.test"

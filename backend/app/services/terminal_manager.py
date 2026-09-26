@@ -492,7 +492,6 @@ class TerminalManager:
                 task.backend = backend
                 task.model = None
                 task.fallback_models = []
-                task.agent_id = None
                 task.session_id = None
                 task.status = TaskStatus.queued
                 task.attention_reason = None

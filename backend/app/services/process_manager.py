@@ -429,10 +429,9 @@ class ProcessManager:
                 handoff_prompt = await self._runtime_handoff_prompt_db(
                     db, task, previous_backend, backend
                 )
-                # A selected agent and model chain may only exist on the old
-                # runtime. Fall back to the destination runtime's defaults.
+                # Model identifiers remain runtime-specific. The selected
+                # portable agent profile is intentionally preserved.
                 task.backend = backend
-                task.agent_id = None
                 task.model = None
                 task.fallback_models = []
                 task.session_id = None
@@ -843,7 +842,6 @@ class ProcessManager:
             }
             for row in agents
             if row.enabled
-            and row.backend == task.backend
             and (override_map.get(("agent", row.id)) is None or override_map[("agent", row.id)].enabled)
         }
         selected = next(
@@ -852,7 +850,6 @@ class ProcessManager:
                 for row in agents
                 if row.id == task.agent_id
                 and row.enabled
-                and row.backend == task.backend
                 and (
                     override_map.get(("agent", row.id)) is None
                     or override_map[("agent", row.id)].enabled

@@ -221,10 +221,7 @@ export interface AgentProfile {
   id: string;
   name: string;
   description: string | null;
-  backend: AgentBackend;
   system_prompt: string;
-  model: string | null;
-  thinking_level: string;
   config: Record<string, unknown>;
   enabled: boolean;
   created_at: string;
@@ -236,6 +233,7 @@ export interface Skill {
   name: string;
   description: string | null;
   instructions: string;
+  tags: string[];
   enabled: boolean;
   created_at: string;
   updated_at: string;
