@@ -17,6 +17,7 @@ from app.services.agent_backends.base import (
     PermissionRequest,
     SessionId,
     UsageEvent,
+    invoked_resources,
     pull_request_guidance,
 )
 
@@ -88,6 +89,7 @@ class ClaudeCodeAdapter:
         secrets: dict[str, str],
         *,
         interactive: bool = False,
+        prompt: str = "",
     ) -> list[str]:
         flags: list[str] = ["--permission-mode", "acceptEdits"]
         if not interactive:
@@ -142,17 +144,20 @@ class ClaudeCodeAdapter:
             flags += ["--fallback-model", ",".join(task.fallback_models)]
         if task.thinking_level:
             flags += ["--effort", task.thinking_level]
-        if bindings.agent_profiles:
+        selected_agent_profiles = invoked_resources(bindings.agent_profiles, prompt)
+        if selected_agent_profiles:
             flags += [
                 "--agents",
-                json.dumps(self._normalize_agent_profiles(bindings.agent_profiles)),
+                json.dumps(self._normalize_agent_profiles(selected_agent_profiles)),
             ]
         system_sections = [pull_request_guidance(bindings)]
         if bindings.selected_agent_prompt:
             system_sections.append(bindings.selected_agent_prompt)
-        if bindings.skills:
+        selected_skills = invoked_resources(bindings.skills, prompt)
+        if selected_skills:
             rendered = "\n\n".join(
-                f"Skill: {name}\n{instructions}" for name, instructions in bindings.skills.items()
+                f"Skill: {name}\n{instructions}"
+                for name, instructions in selected_skills.items()
             )
             system_sections.append(f"Available Muster skills:\n\n{rendered}")
         if system_sections:
@@ -168,8 +173,15 @@ class ClaudeCodeAdapter:
         secrets: dict[str, str],
         prompt: str | None = None,
     ) -> BackendCommand:
-        cmd = [settings.claude_code_bin, "-p", prompt or task.initial_prompt]
-        cmd += self._base_flags(task, project, bindings, secrets)
+        rendered_prompt = prompt or task.initial_prompt
+        cmd = [settings.claude_code_bin, "-p", rendered_prompt]
+        cmd += self._base_flags(
+            task,
+            project,
+            bindings,
+            secrets,
+            prompt=rendered_prompt,
+        )
         return BackendCommand(argv=cmd)
 
     def resume_command(
@@ -182,7 +194,7 @@ class ClaudeCodeAdapter:
         prompt: str,
     ) -> BackendCommand:
         cmd = [settings.claude_code_bin, "--resume", session_id, "-p", prompt]
-        cmd += self._base_flags(task, project, bindings, secrets)
+        cmd += self._base_flags(task, project, bindings, secrets, prompt=prompt)
         return BackendCommand(argv=cmd)
 
     def build_interactive_command(
@@ -192,10 +204,21 @@ class ClaudeCodeAdapter:
         bindings: AdapterBindings,
         secrets: dict[str, str],
         prompt: str | None = None,
+        session_id: str | None = None,
     ) -> BackendCommand:
+        rendered_prompt = prompt or task.initial_prompt
         cmd = [settings.claude_code_bin]
-        cmd += self._base_flags(task, project, bindings, secrets, interactive=True)
-        cmd += ["--", prompt or task.initial_prompt]
+        cmd += self._base_flags(
+            task,
+            project,
+            bindings,
+            secrets,
+            interactive=True,
+            prompt=rendered_prompt,
+        )
+        if session_id:
+            cmd += ["--session-id", session_id]
+        cmd += ["--", rendered_prompt]
         return BackendCommand(argv=cmd)
 
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:

@@ -19,6 +19,7 @@ from app.services.agent_backends.base import (
     PermissionRequest,
     SessionId,
     UsageEvent,
+    invoked_resources,
     pull_request_guidance,
 )
 
@@ -39,13 +40,17 @@ class CodexAdapter:
         sections = []
         if bindings.selected_agent_prompt:
             sections.append(f"Agent profile:\n{bindings.selected_agent_prompt}")
-        if bindings.skills:
-            skills = "\n\n".join(f"Skill: {name}\n{body}" for name, body in bindings.skills.items())
+        selected_skills = invoked_resources(bindings.skills, prompt)
+        if selected_skills:
+            skills = "\n\n".join(
+                f"Skill: {name}\n{body}" for name, body in selected_skills.items()
+            )
             sections.append(f"Available Muster skills:\n{skills}")
-        if bindings.agent_profiles:
+        selected_agents = invoked_resources(bindings.agent_profiles, prompt)
+        if selected_agents:
             agents = "\n\n".join(
                 f"Agent: {name}\nRole: {profile.get('description', name)}\nInstructions: {profile.get('prompt', '')}"
-                for name, profile in bindings.agent_profiles.items()
+                for name, profile in selected_agents.items()
             )
             sections.append(
                 "Available Muster sub-agent profiles. When delegating, use the matching role and "
@@ -94,7 +99,7 @@ class CodexAdapter:
         prompt: str | None = None,
     ) -> BackendCommand:
         rendered_prompt = self._prompt(task, bindings, prompt or task.initial_prompt)
-        cmd = [settings.codex_bin, "exec", "-", "--json"]
+        cmd = [settings.codex_bin, "--no-daemon", "exec", "-", "--json"]
         model = task.model or (
             project.default_model
             if getattr(task, "backend", None) == getattr(project, "default_backend", None)
@@ -121,7 +126,15 @@ class CodexAdapter:
         prompt: str,
     ) -> BackendCommand:
         rendered_prompt = self._prompt(task, bindings, prompt)
-        cmd = [settings.codex_bin, "exec", "resume", session_id, "-", "--json"]
+        cmd = [
+            settings.codex_bin,
+            "--no-daemon",
+            "exec",
+            "resume",
+            session_id,
+            "-",
+            "--json",
+        ]
         model = task.model or (
             project.default_model
             if getattr(task, "backend", None) == getattr(project, "default_backend", None)
@@ -142,9 +155,10 @@ class CodexAdapter:
         bindings: AdapterBindings,
         secrets: dict[str, str],
         prompt: str | None = None,
+        session_id: str | None = None,
     ) -> BackendCommand:
         rendered_prompt = self._prompt(task, bindings, prompt or task.initial_prompt)
-        cmd = [settings.codex_bin]
+        cmd = [settings.codex_bin, "--no-daemon"]
         model = task.model or (
             project.default_model
             if getattr(task, "backend", None) == getattr(project, "default_backend", None)
@@ -259,8 +273,19 @@ class CodexAdapter:
         return ""
 
 
-def create_codex_home_overlay(tool_rules: list[dict], overlay: Path) -> Path:
-    """Layer project rules into a persistent, task-scoped Codex home."""
+def create_codex_home_overlay(
+    tool_rules: list[dict],
+    overlay: Path,
+    *,
+    preserve_legacy_session: bool = False,
+) -> Path:
+    """Layer user configuration into an isolated, task-scoped Codex home.
+
+    Authentication and user-authored configuration are safe to share. Runtime
+    state is not: sessions, history databases, memories, and app-server
+    control files must be owned by one Muster task so a new task cannot see or
+    attach to another task's native conversation.
+    """
     codex_rules = [
         rule
         for rule in tool_rules
@@ -269,8 +294,26 @@ def create_codex_home_overlay(tool_rules: list[dict], overlay: Path) -> Path:
     source_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     overlay.mkdir(parents=True, exist_ok=True)
     overlay.chmod(0o700)
+    shared_names = {
+        "auth.json",
+        "config.toml",
+        "installation_id",
+        "models_cache.json",
+        "packages",
+        "plugins",
+        "skills",
+        "version.json",
+    }
+    for existing in overlay.iterdir():
+        if (
+            not preserve_legacy_session
+            and existing.name != "rules"
+            and existing.is_symlink()
+            and existing.name not in shared_names
+        ):
+            existing.unlink()
     for source in source_home.iterdir() if source_home.exists() else ():
-        if source.name == "rules":
+        if source.name not in shared_names:
             continue
         destination = overlay / source.name
         if not destination.exists() and not destination.is_symlink():

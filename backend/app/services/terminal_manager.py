@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import shutil
+import sqlite3
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -64,6 +66,7 @@ class RunningTerminal:
     final_status: TaskStatus | None = None
     restarting: bool = False
     shutting_down: bool = False
+    session_capture_task: asyncio.Task | None = None
 
 
 class TerminalManager:
@@ -99,12 +102,16 @@ class TerminalManager:
                 return
             secrets = {secret.key_name: decrypt_secret(secret.encrypted_value) for secret in project.secrets}
             adapter = _ADAPTERS[task.backend]
+            native_session_id = (
+                str(uuid.uuid4()) if task.backend == AgentBackend.claude_code else None
+            )
             command = adapter.build_interactive_command(
                 task,
                 project,
                 bindings,
                 secrets,
                 prompt=prompt or task.initial_prompt,
+                session_id=native_session_id,
             )
 
             if task.git_baseline_captured_at is None:
@@ -126,10 +133,12 @@ class TerminalManager:
                 ),
                 thinking_level=task.thinking_level,
                 status="running",
+                session_id=native_session_id,
             )
             task.status = TaskStatus.running
             task.attention_reason = None
             task.completed_at = None
+            task.session_id = native_session_id
             if task.started_at is None:
                 task.started_at = datetime.now(timezone.utc)
             db.add(invocation)
@@ -160,12 +169,17 @@ class TerminalManager:
                 await self._on_exit(running, exit_code)
 
             runtime_env = {**os.environ, **secrets}
+            codex_home: Path | None = None
+            known_codex_sessions: set[str] = set()
             if task.backend == AgentBackend.codex:
                 codex_home = create_codex_home_overlay(
                     bindings.tool_rules,
                     settings.backend_sessions_dir / str(task_id) / AgentBackend.codex.value,
                 )
                 runtime_env["CODEX_HOME"] = str(codex_home)
+                known_codex_sessions = set(
+                    await asyncio.to_thread(_codex_session_ids, codex_home)
+                )
 
             session = TerminalSession(
                 command.argv,
@@ -185,6 +199,14 @@ class TerminalManager:
                 {"type": "invocation", "invocation": _serialize_invocation(invocation)},
             )
             await session.start()
+            if codex_home is not None:
+                running.session_capture_task = asyncio.create_task(
+                    self._capture_codex_session_id(
+                        running,
+                        codex_home,
+                        known_codex_sessions,
+                    )
+                )
         except Exception as exc:  # noqa: BLE001 - any runtime setup failure must finalize the task
             self._running.pop(task_id, None)
             if running is not None:
@@ -196,6 +218,48 @@ class TerminalManager:
                 task_id,
                 invocation.id,
                 f"Unable to start interactive terminal: {exc}",
+            )
+
+    async def _capture_codex_session_id(
+        self,
+        running: RunningTerminal,
+        codex_home: Path,
+        existing_ids: set[str],
+    ) -> None:
+        try:
+            session_id = await _wait_for_new_codex_session_id(codex_home, existing_ids)
+            if session_id is None:
+                logger.warning(
+                    "Codex did not publish a session id for interactive task %s",
+                    running.task_id,
+                )
+                return
+            async with SessionLocal() as db:
+                invocation = await db.get(TaskInvocation, running.invocation_id)
+                task = await db.get(Task, running.task_id)
+                if invocation is None:
+                    return
+                invocation.session_id = session_id
+                latest_invocation_id = (
+                    await db.execute(
+                        select(TaskInvocation.id)
+                        .where(TaskInvocation.task_id == running.task_id)
+                        .order_by(TaskInvocation.sequence.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if task is not None and latest_invocation_id == invocation.id:
+                    task.session_id = session_id
+                await db.commit()
+                await db.refresh(invocation)
+            await broadcast(
+                running.task_id,
+                {"type": "invocation", "invocation": _serialize_invocation(invocation)},
+            )
+        except Exception:  # noqa: BLE001 - capture failure must not kill the terminal
+            logger.exception(
+                "failed to capture Codex session id for interactive task %s",
+                running.task_id,
             )
 
     async def _on_output(self, running: RunningTerminal, data: bytes) -> None:
@@ -644,3 +708,65 @@ def _cleanup_temp_paths(paths: tuple[Path, ...]) -> None:
                 path.unlink(missing_ok=True)
         except OSError:
             logger.warning("failed to remove terminal runtime temp file %s", path, exc_info=True)
+
+
+def _codex_session_ids(codex_home: Path) -> list[str]:
+    """Return newest-first native thread IDs from one task's Codex home."""
+
+    found: list[str] = []
+    index_path = codex_home / "session_index.jsonl"
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            value = json.loads(line).get("id")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if value and str(value) not in found:
+            found.append(str(value))
+
+    state_path = codex_home / "state_5.sqlite"
+    if state_path.is_file():
+        try:
+            with sqlite3.connect(
+                f"file:{state_path}?mode=ro", uri=True, timeout=0.1
+            ) as connection:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(threads)")
+                }
+                order_columns = [
+                    name for name in ("created_at_ms", "created_at") if name in columns
+                ]
+                order_clause = (
+                    " ORDER BY " + ", ".join(f"{name} DESC" for name in order_columns)
+                    if order_columns
+                    else ""
+                )
+                rows = connection.execute(
+                    f"SELECT id FROM threads{order_clause}"  # noqa: S608 - fixed column allowlist
+                ).fetchall()
+            for (value,) in rows:
+                if value and str(value) not in found:
+                    found.append(str(value))
+        except (OSError, sqlite3.Error):
+            pass
+    return found
+
+
+async def _wait_for_new_codex_session_id(
+    codex_home: Path,
+    existing_ids: set[str],
+    *,
+    attempts: int = 300,
+    delay: float = 0.1,
+) -> str | None:
+    for _ in range(attempts):
+        session_ids = await asyncio.to_thread(_codex_session_ids, codex_home)
+        new_id = next((value for value in session_ids if value not in existing_ids), None)
+        if new_id is not None:
+            return new_id
+        await asyncio.sleep(delay)
+    return None

@@ -42,6 +42,7 @@ def test_codex_interactive_command_uses_tui_not_exec(tmp_path):
     )
 
     assert command.argv[0] == "codex"
+    assert command.argv[1] == "--no-daemon"
     assert "exec" not in command.argv
     assert command.argv[-2] == "--"
     assert command.argv[-1].endswith("fix the bug")
@@ -50,17 +51,20 @@ def test_codex_interactive_command_uses_tui_not_exec(tmp_path):
 
 
 def test_claude_interactive_command_omits_print_only_flags(tmp_path):
+    session_id = "11111111-1111-4111-8111-111111111111"
     command = ClaudeCodeAdapter().build_interactive_command(
         _task(AgentBackend.claude_code),
         _project(AgentBackend.claude_code),
         _bindings(tmp_path),
         {},
+        session_id=session_id,
     )
 
     assert command.argv[0] == "claude"
     assert "-p" not in command.argv
     assert "--output-format" not in command.argv
     assert "--permission-prompts" not in command.argv
+    assert command.argv[command.argv.index("--session-id") + 1] == session_id
     assert command.argv[-2] == "--"
     assert command.argv[-1] == "fix the bug"
 

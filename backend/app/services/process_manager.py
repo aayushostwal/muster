@@ -720,7 +720,9 @@ class ProcessManager:
             if resume_session_id:
                 repair_codex_rollout_path(resume_session_id)
             codex_home = create_codex_home_overlay(
-                bindings.tool_rules, backend_session_path
+                bindings.tool_rules,
+                backend_session_path,
+                preserve_legacy_session=bool(resume_session_id),
             )
             runtime_env["CODEX_HOME"] = str(codex_home)
 

@@ -237,6 +237,10 @@ until they explicitly take control. Browser disconnects do not stop the PTY.
 Output is retained in a bounded in-memory replay buffer and in a mode-0600 log
 under `data/terminals/<task>/<invocation>.ttylog`. Cancel, restart, delete,
 runtime switch, and backend shutdown terminate the entire PTY process group.
+Every fresh interactive invocation receives a new native session ID. Claude is
+started with an explicit generated UUID; Codex runs without the shared daemon
+and Muster captures the new thread ID from that task's isolated Codex home.
+The ID is persisted on both the Task and TaskInvocation records.
 
 The terminal endpoint is disabled unless
 `MUSTER_INTERACTIVE_TERMINAL_ENABLED=true`, accepts only loopback clients, and
@@ -272,6 +276,11 @@ most one live subprocess per Task (`dict[task_id, RunningProcess]`).
      was delivered;
    - on nonzero exit, classifies the failure (see Failure Handling) and
      either schedules a retry or flips to `failed` and waits.
+
+Enabled agents and skills remain available in the `/` command menu, but their
+full instruction bodies are added to a backend prompt only when that turn
+explicitly invokes the matching `/resource-name`. This keeps unrelated global
+capabilities from inflating every new task's input context.
 
 Each subprocess starts in its own process group, stdout/stderr are drained
 concurrently with an 8 MiB per-event stream limit, and a watchdog enforces
@@ -342,10 +351,15 @@ def resume_command(self, task, project, bindings, secrets, session_id: str) -> B
   turns. Project command-prefix
   permissions are rendered into a task-scoped `CODEX_HOME` under
   `MUSTER_DATA_DIR/backend-sessions`. The path is persisted in
-  `task_backend_sessions` and reused on every turn; it links the user's auth,
-  config, and sessions, so Muster never edits global Codex configuration.
-  Older stale rollout paths are repaired to the matching file in the user's
-  real Codex sessions directory before resume.
+  `task_backend_sessions` and reused on every turn. Only user-authored/runtime
+  prerequisites such as auth, config, plugins, skills, and rules are linked;
+  sessions, history, memories, state databases, and app-server control files
+  are task-local. Codex is launched with `--no-daemon` so one task cannot
+  attach to a shared background runtime. Pre-isolation tasks with an existing
+  resume handle retain their legacy links only for backward-compatible resume;
+  all new sessions use isolated storage. Older stale rollout paths are repaired
+  to the matching file in the user's real Codex sessions directory before
+  resuming a legacy session.
 - PR create/update requests use a configured GitHub MCP connector and never
   start interactive `gh auth login` inside a headless task. Without that
   connector, the agent reports the missing project capability instead of

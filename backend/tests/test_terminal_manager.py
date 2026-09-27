@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import sqlite3
 import uuid
 from collections import deque
 from pathlib import Path
@@ -22,7 +23,13 @@ from app.db.models import (
 )
 from app.services.agent_backends.base import AdapterBindings
 from app.services import terminal_manager as terminal_manager_module
-from app.services.terminal_manager import RunningTerminal, TerminalClient, TerminalManager
+from app.services.terminal_manager import (
+    RunningTerminal,
+    TerminalClient,
+    TerminalManager,
+    _codex_session_ids,
+    _wait_for_new_codex_session_id,
+)
 
 
 class _FakeTerminalSession:
@@ -54,7 +61,12 @@ class _FakeTerminalSession:
         return self.returncode
 
 
-async def _create_task(session_local, *, status=TaskStatus.queued) -> uuid.UUID:
+async def _create_task(
+    session_local,
+    *,
+    status=TaskStatus.queued,
+    backend=AgentBackend.codex,
+) -> uuid.UUID:
     async with session_local() as db:
         project = Project(name="Terminal project", default_backend=AgentBackend.codex)
         db.add(project)
@@ -64,7 +76,7 @@ async def _create_task(session_local, *, status=TaskStatus.queued) -> uuid.UUID:
             title="Interactive task",
             initial_prompt="Fix the bug",
             status=status,
-            backend=AgentBackend.codex,
+            backend=backend,
             runtime_mode=RuntimeMode.interactive,
         )
         db.add(task)
@@ -84,6 +96,49 @@ def _bindings(tmp_path: Path) -> AdapterBindings:
     )
 
 
+@pytest.mark.asyncio
+async def test_codex_session_discovery_waits_for_a_new_task_local_thread(tmp_path):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    index = codex_home / "session_index.jsonl"
+    index.write_text('{"id":"old-thread"}\nnot-json\n', encoding="utf-8")
+    assert _codex_session_ids(codex_home) == ["old-thread"]
+
+    async def publish_new_thread() -> None:
+        await asyncio.sleep(0.01)
+        index.write_text(
+            '{"id":"old-thread"}\n{"id":"new-thread"}\n',
+            encoding="utf-8",
+        )
+
+    publisher = asyncio.create_task(publish_new_thread())
+    captured = await _wait_for_new_codex_session_id(
+        codex_home,
+        {"old-thread"},
+        attempts=10,
+        delay=0.01,
+    )
+    await publisher
+
+    assert captured == "new-thread"
+
+
+def test_codex_session_discovery_supports_state_schema_without_created_at_ms(
+    tmp_path,
+):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    with sqlite3.connect(codex_home / "state_5.sqlite") as connection:
+        connection.execute("CREATE TABLE threads (id TEXT, created_at INTEGER)")
+        connection.executemany(
+            "INSERT INTO threads (id, created_at) VALUES (?, ?)",
+            [("older-thread", 1), ("newer-thread", 2)],
+        )
+        connection.commit()
+
+    assert _codex_session_ids(codex_home) == ["newer-thread", "older-thread"]
+
+
 @pytest.fixture
 def terminal_manager(db_engine, monkeypatch, tmp_path):
     session_local = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -91,6 +146,11 @@ def terminal_manager(db_engine, monkeypatch, tmp_path):
     monkeypatch.setattr(terminal_manager_module.settings, "data_dir", tmp_path / "muster-data")
     monkeypatch.setattr(terminal_manager_module, "broadcast", AsyncMock())
     monkeypatch.setattr(terminal_manager_module, "TerminalSession", _FakeTerminalSession)
+    monkeypatch.setattr(
+        terminal_manager_module,
+        "_wait_for_new_codex_session_id",
+        AsyncMock(return_value=None),
+    )
     _FakeTerminalSession.instances.clear()
     structured = SimpleNamespace(
         _load_project=AsyncMock(
@@ -131,6 +191,70 @@ async def test_codex_terminal_uses_persistent_task_scoped_home(
     assert task is not None and task.status == TaskStatus.running
     assert invocation.runtime_mode == RuntimeMode.interactive
 
+    manager._running.pop(task_id).log_file.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_terminals_receive_distinct_persisted_session_ids(terminal_manager):
+    manager, session_local = terminal_manager
+    first_task_id = await _create_task(session_local, backend=AgentBackend.claude_code)
+    second_task_id = await _create_task(session_local, backend=AgentBackend.claude_code)
+
+    await manager.trigger(first_task_id)
+    await manager.trigger(second_task_id)
+
+    async with session_local() as db:
+        first_task = await db.get(Task, first_task_id)
+        second_task = await db.get(Task, second_task_id)
+        invocations = (
+            await db.execute(
+                select(TaskInvocation).where(
+                    TaskInvocation.task_id.in_([first_task_id, second_task_id])
+                )
+            )
+        ).scalars().all()
+
+    assert first_task is not None and first_task.session_id is not None
+    assert second_task is not None and second_task.session_id is not None
+    assert first_task.session_id != second_task.session_id
+    assert {item.session_id for item in invocations} == {
+        first_task.session_id,
+        second_task.session_id,
+    }
+    for task_id in (first_task_id, second_task_id):
+        running = manager._running.pop(task_id)
+        assert "--session-id" in running.session.argv
+        running.log_file.close()
+
+
+@pytest.mark.asyncio
+async def test_codex_terminal_persists_new_native_session_id(
+    terminal_manager, monkeypatch
+):
+    manager, session_local = terminal_manager
+    task_id = await _create_task(session_local)
+    capture = AsyncMock(return_value="0199aabb-ccdd-7000-8000-000000000001")
+    monkeypatch.setattr(
+        terminal_manager_module,
+        "_wait_for_new_codex_session_id",
+        capture,
+    )
+
+    await manager.trigger(task_id)
+    running = manager._running[task_id]
+    assert running.session_capture_task is not None
+    await running.session_capture_task
+
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        invocation = (
+            await db.execute(select(TaskInvocation).where(TaskInvocation.task_id == task_id))
+        ).scalar_one()
+
+    assert task is not None
+    assert task.session_id == "0199aabb-ccdd-7000-8000-000000000001"
+    assert invocation.session_id == task.session_id
+    capture.assert_awaited_once()
     manager._running.pop(task_id).log_file.close()
 
 
