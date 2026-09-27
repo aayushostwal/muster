@@ -78,13 +78,35 @@ async def test_global_registry_and_project_access(override_get_db):
             "/api/agents",
             json={
                 "name": "Reviewer",
-                "backend": "codex",
                 "system_prompt": "Review changes for correctness.",
-                "thinking_level": "high",
             },
         )
         assert agent_response.status_code == 201
         agent = agent_response.json()
+        assert "backend" not in agent
+        assert "model" not in agent
+        assert "thinking_level" not in agent
+
+        skill_response = await client.post(
+            "/api/skills",
+            json={
+                "name": "Release",
+                "instructions": "Validate the rollout.",
+                "tags": [" Deployment ", "deployment", "Safety"],
+            },
+        )
+        assert skill_response.status_code == 201
+        skill = skill_response.json()
+        assert skill["tags"] == ["Deployment", "Safety"]
+        updated_skill = await client.patch(
+            f"/api/skills/{skill['id']}", json={"tags": ["release"]}
+        )
+        assert updated_skill.json()["tags"] == ["release"]
+        invalid_skill = await client.post(
+            "/api/skills",
+            json={"name": "Invalid", "instructions": "x", "tags": ["x" * 33]},
+        )
+        assert invalid_skill.status_code == 422
 
         tool_response = await client.post(
             "/api/global-tools",
@@ -142,6 +164,7 @@ async def test_global_registry_and_project_access(override_get_db):
         assert updated.status_code == 200
         assert updated.json()["description"] == "Production review agent"
         assert (await client.delete(f"/api/agents/{agent['id']}")).status_code == 204
+        assert (await client.delete(f"/api/skills/{skill['id']}")).status_code == 204
         assert (await client.delete(f"/api/global-tools/{tool['id']}")).status_code == 204
 
 

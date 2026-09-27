@@ -121,6 +121,22 @@ def _agent_tool_list(value: Any) -> list[str]:
     return []
 
 
+def _capability_tags(value: Any) -> list[str]:
+    """Normalize comma-separated or YAML-list capability tags."""
+    raw = value.split(",") if isinstance(value, str) else value if isinstance(value, list) else []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        clean = " ".join(str(item).strip().split())
+        key = clean.casefold()
+        if clean and len(clean) <= 32 and key not in seen:
+            tags.append(clean)
+            seen.add(key)
+        if len(tags) == 12:
+            break
+    return tags
+
+
 def _normalize_mcp(raw: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(raw, dict):
         return None, ["MCP configuration is not an object"]
@@ -200,6 +216,7 @@ def _skill_candidates(
                 raise ValueError("SKILL.md has no instruction body")
             name = str(metadata.get("name") or directory.name).strip()
             description = str(metadata.get("description") or "").strip() or None
+            tags = _capability_tags(metadata.get("tags"))
             support_files = [path for path in directory.rglob("*") if path.is_file() and path != manifest]
             item_warnings = []
             if support_files:
@@ -209,6 +226,7 @@ def _skill_candidates(
             preview = {
                 "instruction_characters": len(instructions),
                 "supporting_files": len(support_files),
+                "tags": tags,
             }
             if origin_metadata and origin_metadata.get("plugin"):
                 preview["plugin"] = origin_metadata["plugin"]
@@ -220,7 +238,7 @@ def _skill_candidates(
                     source_locator=locator,
                     name=name,
                     description=description,
-                    payload={"name": name, "description": description, "instructions": instructions, "enabled": True},
+                    payload={"name": name, "description": description, "instructions": instructions, "tags": tags, "enabled": True},
                     preview=preview,
                     warnings=item_warnings,
                     source_metadata={
@@ -255,12 +273,6 @@ def _markdown_agents(
                 raise ValueError("agent file has no prompt body")
             name = str(metadata.get("name") or path.stem).strip()
             description = str(metadata.get("description") or "").strip() or None
-            model = metadata.get("model")
-            if model in {None, "inherit"}:
-                model = None
-            thinking = str(metadata.get("effort") or "medium").lower()
-            if thinking not in {"low", "medium", "high", "xhigh", "max"}:
-                thinking = "medium"
             portable_config = {
                 key: (
                     _agent_tool_list(metadata[key])
@@ -281,17 +293,13 @@ def _markdown_agents(
                     payload={
                         "name": name,
                         "description": description,
-                        "backend": "claude_code" if runtime == "claude" else "codex",
                         "system_prompt": prompt,
-                        "model": str(model) if model else None,
-                        "thinking_level": thinking,
                         "config": portable_config,
                         "enabled": True,
                     },
                     preview={
-                        "backend": "claude_code" if runtime == "claude" else "codex",
-                        "model": model,
-                        "thinking_level": thinking,
+                        "portable": True,
+                        "source_runtime": runtime,
                         "configured_tools": metadata.get("tools") or [],
                     },
                     source_metadata={"file": locator, **(origin_metadata or {})},
@@ -334,10 +342,6 @@ def _codex_agents(home: Path, config: dict[str, Any], config_path: Path) -> tupl
                 or description
                 or f"Act as the {name} specialist."
             ).strip()
-            thinking = str(role_config.get("model_reasoning_effort") or "medium").lower()
-            if thinking not in {"low", "medium", "high", "xhigh", "max"}:
-                thinking = "medium"
-            model = role_config.get("model")
             ignored = {"developer_instructions", "instructions", "system_prompt", "model", "model_reasoning_effort"}
             portable_config = {key: value for key, value in role_config.items() if key not in ignored}
             items.append(
@@ -351,14 +355,11 @@ def _codex_agents(home: Path, config: dict[str, Any], config_path: Path) -> tupl
                     payload={
                         "name": str(name),
                         "description": description,
-                        "backend": "codex",
                         "system_prompt": prompt,
-                        "model": str(model) if model else None,
-                        "thinking_level": thinking,
                         "config": portable_config,
                         "enabled": True,
                     },
-                    preview={"backend": "codex", "model": model, "thinking_level": thinking},
+                    preview={"portable": True, "source_runtime": "codex"},
                     source_metadata={
                         "config": _display_path(config_path, home),
                         "config_file": _display_path(role_path, home) if role_path else None,

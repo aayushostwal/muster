@@ -154,6 +154,7 @@ def test_claude_normalizes_explicitly_invoked_agent_tool_lists():
                 "prompt": "Review carefully.",
                 "tools": "Bash, Read, Grep",
                 "disallowedTools": "Write, Edit",
+                "codex_only_setting": "must-not-leak",
             }
         },
         skills={},
@@ -170,6 +171,7 @@ def test_claude_normalizes_explicitly_invoked_agent_tool_lists():
 
     assert profiles["reviewer"]["tools"] == ["Bash", "Read", "Grep"]
     assert profiles["reviewer"]["disallowedTools"] == ["Write", "Edit"]
+    assert "codex_only_setting" not in profiles["reviewer"]
 
 
 def test_codex_renders_remote_mcp_flags_as_toml():

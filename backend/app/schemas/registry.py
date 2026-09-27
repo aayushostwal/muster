@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -75,10 +75,7 @@ class GlobalMcpRead(BaseModel):
 class AgentProfileCreate(BaseModel):
     name: str
     description: str | None = None
-    backend: AgentBackend
     system_prompt: str
-    model: str | None = None
-    thinking_level: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
@@ -86,10 +83,7 @@ class AgentProfileCreate(BaseModel):
 class AgentProfileUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    backend: AgentBackend | None = None
     system_prompt: str | None = None
-    model: str | None = None
-    thinking_level: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     config: dict[str, Any] | None = None
     enabled: bool | None = None
 
@@ -99,17 +93,35 @@ class AgentProfileRead(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
-    backend: AgentBackend
     system_prompt: str
-    model: str | None
-    thinking_level: str
     config: dict
     enabled: bool
     created_at: datetime
     updated_at: datetime
 
 
-class SkillCreate(BaseModel):
+class SkillTagsMixin(BaseModel):
+    tags: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            clean = " ".join(value.strip().split())
+            if not clean:
+                continue
+            if len(clean) > 32:
+                raise ValueError("Skill tags must be 32 characters or fewer")
+            key = clean.casefold()
+            if key not in seen:
+                normalized.append(clean)
+                seen.add(key)
+        return normalized
+
+
+class SkillCreate(SkillTagsMixin):
     name: str
     description: str | None = None
     instructions: str
@@ -120,7 +132,15 @@ class SkillUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     instructions: str | None = None
+    tags: list[str] | None = Field(default=None, max_length=12)
     enabled: bool | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+        return SkillTagsMixin(tags=values).tags
 
 
 class SkillRead(BaseModel):
@@ -129,6 +149,7 @@ class SkillRead(BaseModel):
     name: str
     description: str | None
     instructions: str
+    tags: list[str]
     enabled: bool
     created_at: datetime
     updated_at: datetime

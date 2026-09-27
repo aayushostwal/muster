@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import threading
 import uuid
 from unittest.mock import AsyncMock
 
@@ -22,7 +23,8 @@ def test_terminal_websocket_attaches_and_forwards_input(monkeypatch):
     )
     attach = AsyncMock(return_value=("client-1", queue))
     send_input = AsyncMock()
-    detach = AsyncMock()
+    detached = threading.Event()
+    detach = AsyncMock(side_effect=lambda *_: detached.set())
     monkeypatch.setattr(terminal_manager, "attach", attach)
     monkeypatch.setattr(terminal_manager, "input", send_input)
     monkeypatch.setattr(terminal_manager, "detach", detach)
@@ -42,6 +44,7 @@ def test_terminal_websocket_attaches_and_forwards_input(monkeypatch):
 
     attach.assert_awaited_once_with(task_id, cols=90, rows=28, after_seq=0)
     send_input.assert_awaited_once_with(task_id, "client-1", b"hello")
+    assert detached.wait(timeout=1), "terminal websocket did not detach"
     detach.assert_awaited_once_with(task_id, "client-1")
 
 

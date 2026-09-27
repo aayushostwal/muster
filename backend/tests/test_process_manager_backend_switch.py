@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models import (
     AgentBackend,
+    AgentProfile,
     Message,
     MessageSender,
     Project,
@@ -32,7 +33,12 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
     now = datetime.now(timezone.utc)
     async with session_local() as db:
         project = Project(name="Runtime switch", default_backend=AgentBackend.claude_code)
-        db.add(project)
+        agent = AgentProfile(
+            name="Portable reviewer",
+            system_prompt="Review carefully.",
+            config={},
+        )
+        db.add_all([project, agent])
         await db.flush()
         task = Task(
             project_id=project.id,
@@ -41,6 +47,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
             status=TaskStatus.done,
             attention_reason="awaiting_review",
             backend=AgentBackend.claude_code,
+            agent_id=agent.id,
             model="claude-sonnet",
             fallback_models=["claude-haiku"],
             session_id="claude-native-session",
@@ -81,6 +88,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
         )
         await db.commit()
         task_id = task.id
+        agent_id = agent.id
 
     manager = ProcessManager()
     spawn = AsyncMock()
@@ -103,6 +111,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
 
     assert switched is not None
     assert switched.backend == AgentBackend.codex
+    assert switched.agent_id == agent_id
     assert switched.status == TaskStatus.queued
     assert switched.attention_reason is None
     assert switched.session_id is None

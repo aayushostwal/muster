@@ -11,6 +11,7 @@ export function MarkdownContent({ content, className }: { content: string; class
   return (
     <div className={cn("min-w-0 break-words text-sm leading-6 text-slate-300", className)}>
       <ReactMarkdown
+        skipHtml
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => <h1 className="mb-3 mt-5 text-xl font-semibold tracking-tight text-white first:mt-0">{children}</h1>,

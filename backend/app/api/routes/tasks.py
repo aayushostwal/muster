@@ -79,8 +79,6 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
         ).scalar_one_or_none()
         if not agent.enabled or (override is not None and not override.enabled):
             raise HTTPException(status_code=422, detail="Agent profile is disabled for this project")
-        if body.backend is not None and body.backend != agent.backend:
-            raise HTTPException(status_code=422, detail="Agent profile does not support this runtime")
     runtime_mode = body.runtime_mode or RuntimeMode(settings.default_task_runtime_mode)
     if runtime_mode == RuntimeMode.interactive and not settings.interactive_terminal_enabled:
         raise HTTPException(status_code=422, detail="Interactive terminal runtime is disabled")
@@ -89,12 +87,12 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
         title=body.title,
         initial_prompt=body.initial_prompt,
         status=TaskStatus.queued,
-        backend=body.backend or (agent.backend if agent else project.default_backend),
+        backend=body.backend or project.default_backend,
         runtime_mode=runtime_mode,
-        model=body.model or (agent.model if agent else project.default_model),
+        model=body.model or project.default_model,
         fallback_models=body.fallback_models,
         tags=body.tags,
-        thinking_level=body.thinking_level or (agent.thinking_level if agent else "medium"),
+        thinking_level=body.thinking_level or "medium",
         agent_id=body.agent_id,
         context_strategy=body.context_strategy or project.default_context_strategy,
     )

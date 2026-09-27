@@ -31,8 +31,19 @@ class ClaudeCodeAdapter:
     def _normalize_agent_profiles(agent_profiles: dict[str, dict]) -> dict[str, dict]:
         """Convert imported frontmatter values to Claude's --agents JSON schema."""
         normalized: dict[str, dict] = {}
+        supported = {
+            "description",
+            "prompt",
+            "tools",
+            "disallowedTools",
+            "permissionMode",
+            "maxTurns",
+        }
         for name, profile in agent_profiles.items():
-            definition = dict(profile)
+            # Portable profiles may have originated in Codex and therefore
+            # contain runtime-specific config. Never forward unknown keys to
+            # Claude's strict --agents JSON parser.
+            definition = {key: value for key, value in profile.items() if key in supported}
             for field in ("tools", "disallowedTools"):
                 value = definition.get(field)
                 if isinstance(value, str):

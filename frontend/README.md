@@ -38,6 +38,12 @@ Capabilities from enabled marketplace packages, including Nexus, appear with
 a **Plugin** badge in the same picker; select them and use **Import selected**
 exactly like user-authored capabilities.
 
+The Agent and Skill registries use a searchable resource list with a detail
+inspector. Agent profiles are portable between Claude and Codex; runtime,
+model, and thinking settings stay on the task. Skills support editable tags
+and tag filtering. Agent prompts and skill instructions render through the
+safe Markdown component with raw HTML disabled.
+
 ## Local development
 
 ```bash

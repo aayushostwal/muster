@@ -104,6 +104,9 @@ the Next.js development server on port 5173, run `make up` rather than
 - Manage directories, MCP connectors, agents, skills, and tool policies once in global
   registries. Projects explicitly bind directories and can enable or disable
   every other capability without duplicating configuration.
+- Use the same agent profiles, tagged skills, and MCP connectors with Claude
+  Code or Codex. Agent roles stay independent from task runtime, model, and
+  thinking settings.
 - Choose one read/write directory as each Project's working root. Claude Code
   and Codex start there, while every other granted directory is attached as an
   additional workspace.

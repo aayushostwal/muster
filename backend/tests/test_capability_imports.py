@@ -27,7 +27,7 @@ def _source_home(tmp_path: Path) -> Path:
     )
     _write(
         tmp_path / ".claude" / "skills" / "release" / "SKILL.md",
-        "---\nname: Release\ndescription: Prepare releases\n---\n"
+        "---\nname: Release\ndescription: Prepare releases\ntags: [deployment, safety]\n---\n"
         "Validate the release, changelog, and rollback plan.\n",
     )
     _write(tmp_path / ".claude" / "skills" / "release" / "checklist.md", "supporting file")
@@ -81,6 +81,7 @@ def test_discovery_normalizes_sources_and_redacts_secret_values(tmp_path: Path):
     assert issue_server.preview["environment_keys"] == ["SECRET_TOKEN"]
     release = next(item for item in result.items if item.name == "Release")
     assert release.warnings
+    assert release.payload["tags"] == ["deployment", "safety"]
     reviewer = next(item for item in result.items if item.name == "Reviewer")
     assert reviewer.payload["config"]["tools"] == ["Bash", "Read", "Grep"]
 
@@ -197,8 +198,10 @@ def test_discovery_includes_enabled_plugin_agents_and_skills_only(tmp_path: Path
     assert "disabled-connector" not in by_name
     assert by_name["Nexus Incident"].source_scope == "plugin"
     assert by_name["Nexus Incident"].source_metadata["plugin"] == "nexus@nexus-marketplace"
-    assert by_name["Nexus Reviewer"].payload["backend"] == "claude_code"
-    assert by_name["Nexus Architect"].payload["backend"] == "codex"
+    assert by_name["Nexus Reviewer"].preview["portable"] is True
+    assert by_name["Nexus Architect"].preview["portable"] is True
+    assert "backend" not in by_name["Nexus Reviewer"].payload
+    assert "backend" not in by_name["Nexus Architect"].payload
     assert by_name["Nexus Planning"].preview["plugin"] == "nexus@codex-marketplace-global"
     assert by_name["slack"].source_scope == "plugin"
     assert by_name["slack"].source_metadata["plugin"] == "nexus@nexus-marketplace"
@@ -263,6 +266,7 @@ async def test_import_is_idempotent_and_resyncs_changes(
         skills = await client.get("/api/skills")
         synced = next(item for item in skills.json()["items"] if item["name"] == "Release")
         assert "Always verify the rollback" in synced["instructions"]
+        assert synced["tags"] == ["deployment", "safety"]
 
 
 @pytest.mark.asyncio
