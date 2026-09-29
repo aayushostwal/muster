@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,7 +28,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.models import CronJob, RuntimeMode, Task, TaskStatus
+from app.db.models import CronJob, IntegrationSettings, RuntimeMode, Task, TaskStatus
 from app.db.session import SessionLocal
 from app.services.process_manager import process_manager
 
@@ -59,6 +60,7 @@ def sync_jobs_from_db() -> None:
 
     with Session(_sync_engine) as db:
         rows = db.execute(select(CronJob).where(CronJob.enabled.is_(True))).scalars().all()
+        integration = db.get(IntegrationSettings, 1)
 
     for cron_job in rows:
         if not is_valid_cron(cron_job.schedule_expr):
@@ -83,6 +85,19 @@ def sync_jobs_from_db() -> None:
             replace_existing=True,
             misfire_grace_time=60,
         )
+    if integration and integration.enabled:
+        try:
+            trigger = CronTrigger.from_crontab(integration.schedule_expr, timezone=ZoneInfo(integration.timezone))
+            scheduler.add_job(_fire_integrations, trigger=trigger, id=f"{_JOB_ID_PREFIX}integrations",
+                              replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=3600)
+        except (ValueError, ZoneInfoNotFoundError):
+            logger.warning("skipping invalid Jira/Slack integration schedule")
+
+
+async def _fire_integrations() -> None:
+    from app.services.integrations import run_integration_once
+
+    await run_integration_once()
 
 
 async def _fire_cron_job(cron_job_id: uuid.UUID) -> None:

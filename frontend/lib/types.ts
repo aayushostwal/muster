@@ -188,6 +188,38 @@ export interface CronJob {
   created_at: string;
 }
 
+export interface IntegrationConfig {
+  enabled: boolean;
+  schedule_expr: string;
+  timezone: string;
+  jira_base_url: string | null;
+  jira_email: string | null;
+  has_jira_token: boolean;
+  has_slack_token: boolean;
+  slack_user_id: string | null;
+  slack_jira_project_key: string | null;
+  jira_cursor: string | null;
+  slack_cursor: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+}
+
+export interface JiraProjectMapping {
+  id: string;
+  jira_project_key: string;
+  project_id: string;
+}
+
+export interface IntegrationReviewItem {
+  id: string;
+  source: string;
+  status: string;
+  external_id: string;
+  detail: string | null;
+  created_at: string;
+}
+
 export interface RunAttempt {
   id: string;
   task_id: string;

@@ -125,6 +125,9 @@ the Next.js development server on port 5173, run `make up` rather than
   effort, and switch context strategy without losing conversation history.
 - Schedule recurring agent runs with Cron Jobs — they land on the same
   Kanban board as anything triggered by hand.
+- Connect Jira and Slack to a global schedule that turns assigned issues and
+  directed Slack requests into tracked agent tasks. See the
+  [integration setup guide](docs/INTEGRATIONS.md).
 - Trust that a transient failure (a usage limit, a network blip) retries
   itself with backoff, logged inline in the chat, while anything else pauses
   cleanly for you instead of guessing.

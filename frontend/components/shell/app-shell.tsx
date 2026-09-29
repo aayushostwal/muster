@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
-import { Activity, Bot, Code2, Command, FolderCode, FolderKanban, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
+import { Activity, Bot, Clock3, Code2, Command, FolderCode, FolderKanban, Menu, Network, PanelLeftClose, Search, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -59,6 +59,7 @@ function SidebarContent({ close }: { close?: () => void }) {
             { href: "/registry/tools", label: "Tools", icon: Code2 },
             { href: "/registry/mcp", label: "MCP connectors", icon: Network },
             { href: "/registry/directories", label: "Directories", icon: FolderCode },
+            { href: "/integrations", label: "Jira & Slack schedule", icon: Clock3 },
           ].map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
