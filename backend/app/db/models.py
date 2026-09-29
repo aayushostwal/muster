@@ -628,3 +628,70 @@ class Secret(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="secrets")
+
+
+class IntegrationSettings(Base):
+    """One host-wide Jira/Slack polling schedule and its durable cursors."""
+
+    __tablename__ = "integration_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule_expr: Mapped[str] = mapped_column(String(100), default="0 9 * * 1-5")
+    timezone: Mapped[str] = mapped_column(String(100), default="UTC")
+    jira_base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    jira_email: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    jira_token: Mapped[bytes | None] = mapped_column(nullable=True)
+    slack_token: Mapped[bytes | None] = mapped_column(nullable=True)
+    slack_user_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    slack_jira_project_key: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    jira_cursor: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    slack_cursor: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class JiraProjectMapping(Base):
+    __tablename__ = "jira_project_mappings"
+    __table_args__ = (UniqueConstraint("jira_project_key", name="uq_jira_project_key"),)
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    jira_project_key: Mapped[str] = mapped_column(String(30), nullable=False)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+
+
+class JiraIssueLink(Base):
+    __tablename__ = "jira_issue_links"
+    __table_args__ = (UniqueConstraint("issue_id", name="uq_jira_issue_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    issue_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    issue_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IntegrationEvent(Base):
+    """Idempotency ledger for inbound and outbound remote events."""
+
+    __tablename__ = "integration_events"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_integration_event"),)
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IntegrationRun(Base):
+    __tablename__ = "integration_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_col()
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="running")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -6,6 +6,16 @@ type ApiCase = [name: keyof typeof api, args: unknown[], path: string, method?: 
 
 const cases: ApiCase[] = [
   ["health", [], "/api/health"],
+  ["integrationConfig", [], "/api/integrations/config"],
+  ["updateIntegrationConfig", [{ enabled: true }], "/api/integrations/config", "PATCH", { enabled: true }],
+  ["integrationMappings", [], "/api/integrations/mappings"],
+  ["createIntegrationMapping", [{ jira_project_key: "APP", project_id: "p" }], "/api/integrations/mappings", "POST", { jira_project_key: "APP", project_id: "p" }],
+  ["deleteIntegrationMapping", ["m"], "/api/integrations/mappings/m", "DELETE"],
+  ["runIntegrationNow", [], "/api/integrations/run-now", "POST"],
+  ["integrationReview", [], "/api/integrations/review"],
+  ["createReviewTicket", ["e"], "/api/integrations/review/e/create-ticket", "POST"],
+  ["linkReviewTicket", ["e", "APP-1"], "/api/integrations/review/e/link-ticket", "POST", { issue_key: "APP-1" }],
+  ["dismissIntegrationReview", ["e"], "/api/integrations/review/e/dismiss", "POST"],
   ["projects", [], "/api/projects"],
   ["project", ["p"], "/api/projects/p"],
   ["createProject", [{ name: "Project" }], "/api/projects", "POST", { name: "Project" }],

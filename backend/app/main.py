@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,6 +9,7 @@ from app.api.routes import (
     artifacts,
     capability_imports,
     cron,
+    integrations,
     directories,
     mcp_servers,
     pr_delivery,
@@ -21,6 +23,7 @@ from app.api.routes import (
     ws,
 )
 from app.services.cron_scheduler import scheduler, sync_jobs_from_db
+from app.services.integrations import run_integration_once
 from app.services.process_manager import process_manager
 
 
@@ -30,7 +33,13 @@ async def lifespan(app: FastAPI):
     await process_manager.reconcile_interrupted_tasks()
     scheduler.start()
     sync_jobs_from_db()
+    catchup_task = asyncio.create_task(run_integration_once())
     yield
+    catchup_task.cancel()
+    try:
+        await catchup_task
+    except asyncio.CancelledError:
+        pass
     scheduler.shutdown()
     await process_manager.shutdown()
 
@@ -54,6 +63,7 @@ app.include_router(tools.task_router, prefix="/api")
 app.include_router(artifacts.router, prefix="/api")
 app.include_router(secrets_routes.router, prefix="/api")
 app.include_router(cron.router, prefix="/api")
+app.include_router(integrations.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
 app.include_router(task_tags.router, prefix="/api")
 app.include_router(pr_delivery.router, prefix="/api")

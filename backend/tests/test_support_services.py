@@ -338,6 +338,7 @@ def test_cron_sync_replaces_jobs_and_skips_invalid_entries(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def execute(self, statement): return Result()
+        def get(self, model, primary_key): return None
 
     monkeypatch.setattr(cron_scheduler, "scheduler", scheduler)
     monkeypatch.setattr(cron_scheduler, "Session", lambda engine: FakeSession())

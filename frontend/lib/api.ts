@@ -7,6 +7,9 @@ import type {
   CapabilityDiscovery,
   CapabilityImportResult,
   CronJob,
+  IntegrationConfig,
+  JiraProjectMapping,
+  IntegrationReviewItem,
   DirectoryBinding,
   DirectoryResource,
   GlobalMcpServer,
@@ -87,6 +90,18 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 
 export const api = {
   health: () => request<{ status: string }>("/api/health"),
+  integrationConfig: () => request<IntegrationConfig>("/api/integrations/config"),
+  updateIntegrationConfig: (body: Partial<IntegrationConfig> & { jira_token?: string; slack_token?: string }) =>
+    request<IntegrationConfig>("/api/integrations/config", { method: "PATCH", ...json(body) }),
+  integrationMappings: () => request<ListResponse<JiraProjectMapping>>("/api/integrations/mappings"),
+  createIntegrationMapping: (body: { jira_project_key: string; project_id: string }) =>
+    request<JiraProjectMapping>("/api/integrations/mappings", { method: "POST", ...json(body) }),
+  deleteIntegrationMapping: (id: string) => request<void>(`/api/integrations/mappings/${id}`, { method: "DELETE" }),
+  runIntegrationNow: () => request<{ id: string; status: string; error: string | null }>("/api/integrations/run-now", { method: "POST" }),
+  integrationReview: () => request<ListResponse<IntegrationReviewItem>>("/api/integrations/review"),
+  createReviewTicket: (id: string) => request<{ issue_key: string; task_id: string }>(`/api/integrations/review/${id}/create-ticket`, { method: "POST" }),
+  linkReviewTicket: (id: string, issue_key: string) => request<{ issue_key: string; task_id: string }>(`/api/integrations/review/${id}/link-ticket`, { method: "POST", ...json({ issue_key }) }),
+  dismissIntegrationReview: (id: string) => request<{ status: string }>(`/api/integrations/review/${id}/dismiss`, { method: "POST" }),
   projects: () => request<ListResponse<Project>>("/api/projects"),
   project: (id: string) => request<Project>(`/api/projects/${id}`),
   createProject: (body: ProjectInput) =>
