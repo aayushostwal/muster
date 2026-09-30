@@ -29,6 +29,7 @@ from app.core.security import decrypt_secret
 from app.db.models import (
     AgentBackend,
     AgentProfile,
+    CapabilityImport,
     DirectoryBinding,
     GlobalMcpServer,
     GlobalTool,
@@ -715,6 +716,9 @@ class ProcessManager:
 
         runtime_env = {**os.environ, **secrets}
         runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd.argv))
+        if task.backend == AgentBackend.claude_code:
+            # One-shot runs must discover MCP tools before their first prompt.
+            runtime_env.setdefault("MCP_CONNECT_TIMEOUT_MS", "30000")
         if task.backend == AgentBackend.codex:
             if resume_session_id:
                 repair_codex_rollout_path(resume_session_id)
@@ -826,10 +830,28 @@ class ProcessManager:
         override_map = {(row.resource_type, row.resource_id): row for row in overrides}
 
         global_mcp = (await db.execute(select(GlobalMcpServer))).scalars().all()
+        native_claude_mcp_ids: set[uuid.UUID] = set()
+        if task.backend == AgentBackend.claude_code:
+            imports = (await db.execute(
+                select(CapabilityImport).where(
+                    CapabilityImport.resource_type == "mcp",
+                    CapabilityImport.source_runtime == "claude",
+                )
+            )).scalars().all()
+            native_claude_mcp_ids = {
+                item.resource_id for item in imports
+                if Path(item.source_locator.split("#", 1)[0]).expanduser().is_file()
+                and not (
+                    override_map.get(("mcp", item.resource_id))
+                    and override_map[("mcp", item.resource_id)].config_override
+                )
+            }
         mcp_servers: dict[str, dict] = {
             row.name: {**row.config, **(override_map.get(("mcp", row.id)).config_override if override_map.get(("mcp", row.id)) else {})}
             for row in global_mcp
-            if row.enabled and (override_map.get(("mcp", row.id)) is None or override_map[("mcp", row.id)].enabled)
+            if row.enabled
+            and row.id not in native_claude_mcp_ids
+            and (override_map.get(("mcp", row.id)) is None or override_map[("mcp", row.id)].enabled)
         }
         mcp_servers.update({m.name: m.config for m in project.mcp_servers})
 
