@@ -283,12 +283,15 @@ export const api = {
       prompt: string;
       backend: AgentBackend;
       model?: string | null;
+      thinking_level?: CronJob["thinking_level"];
     },
   ) =>
     request<CronJob>(`/api/projects/${projectId}/cron-jobs`, {
       method: "POST",
       ...json(body),
     }),
+  updateCron: (projectId: string, id: string, body: Partial<Pick<CronJob, "name" | "schedule_expr" | "interval_minutes" | "prompt" | "backend" | "model" | "thinking_level">>) =>
+    request<CronJob>(`/api/projects/${projectId}/cron-jobs/${id}`, { method: "PATCH", ...json(body) }),
   toggleCron: (projectId: string, id: string, enabled: boolean) =>
     request<CronJob>(`/api/projects/${projectId}/cron-jobs/${id}/${enabled ? "enable" : "disable"}`, {
       method: "POST",

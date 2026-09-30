@@ -142,7 +142,7 @@ async def test_recurring_agent_requires_working_directory_and_accepts_interval(o
     monkeypatch.setattr(cron, "sync_jobs_from_db", lambda: None)
     async with AsyncClient(transport=ASGITransport(app=_app(override_get_db)), base_url="http://test") as client:
         project_id = await _project(client)
-        body = {"name": "triage", "prompt": "Review connected sources", "backend": "codex", "interval_minutes": 90}
+        body = {"name": "triage", "prompt": "Review connected sources", "backend": "codex", "model": "gpt-example", "thinking_level": "high", "interval_minutes": 90}
         assert (await client.post(f"/api/projects/{project_id}/cron-jobs", json=body)).status_code == 422
         directory = await client.post("/api/directories", json={"name": "Work", "path": "/tmp/muster-work"})
         assert directory.status_code == 201
@@ -151,6 +151,20 @@ async def test_recurring_agent_requires_working_directory_and_accepts_interval(o
         created = await client.post(f"/api/projects/{project_id}/cron-jobs", json=body)
         assert created.status_code == 201
         assert created.json()["interval_minutes"] == 90
+        assert created.json()["model"] == "gpt-example"
+        assert created.json()["thinking_level"] == "high"
+        job_id = created.json()["id"]
+        updated = await client.patch(
+            f"/api/projects/{project_id}/cron-jobs/{job_id}",
+            json={"prompt": "Review Jira and Slack", "interval_minutes": 120, "model": None, "thinking_level": "low"},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["prompt"] == "Review Jira and Slack"
+        assert updated.json()["interval_minutes"] == 120
+        assert updated.json()["model"] is None
+        assert updated.json()["thinking_level"] == "low"
+        assert (await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json={"thinking_level": "invalid"})).status_code == 422
+        assert (await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json={"thinking_level": None})).status_code == 422
         assert (await client.post(f"/api/projects/{project_id}/cron-jobs", json={**body, "interval_minutes": 0})).status_code == 422
 
 
