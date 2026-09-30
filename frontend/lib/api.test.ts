@@ -69,6 +69,7 @@ const cases: ApiCase[] = [
   ["putSecret", ["p", "API key/one", "secret"], "/api/projects/p/secrets/API%20key%2Fone", "PUT", { value: "secret" }],
   ["deleteSecret", ["p", "API key"], "/api/projects/p/secrets/API%20key", "DELETE"],
   ["cronJobs", ["p"], "/api/projects/p/cron-jobs"],
+  ["allCronJobs", [], "/api/cron-jobs"],
   ["createCron", ["p", { name: "daily", schedule_expr: "0 0 * * *", prompt: "go", backend: "codex" }], "/api/projects/p/cron-jobs", "POST", { name: "daily", schedule_expr: "0 0 * * *", prompt: "go", backend: "codex" }],
   ["updateCron", ["p", "c", { model: "gpt-example", thinking_level: "high" }], "/api/projects/p/cron-jobs/c", "PATCH", { model: "gpt-example", thinking_level: "high" }],
   ["toggleCron", ["p", "c", true], "/api/projects/p/cron-jobs/c/enable", "POST"],

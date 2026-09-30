@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -22,6 +23,7 @@ def _app(override_get_db) -> FastAPI:
         mcp_servers.router,
         tools.router,
         cron.router,
+        cron.global_router,
     ):
         app.include_router(router, prefix="/api")
     app.dependency_overrides[get_db] = override_get_db
@@ -163,6 +165,17 @@ async def test_recurring_agent_requires_working_directory_and_accepts_interval(o
         assert updated.json()["interval_minutes"] == 120
         assert updated.json()["model"] is None
         assert updated.json()["thinking_level"] == "low"
+        paused = await client.post(f"/api/projects/{project_id}/cron-jobs/{job_id}/disable")
+        assert paused.status_code == 200
+        listed = await client.get("/api/cron-jobs")
+        assert listed.status_code == 200
+        assert any(item["id"] == job_id and item["enabled"] is False for item in listed.json()["items"])
+        fire = AsyncMock(return_value=uuid.uuid4())
+        monkeypatch.setattr(cron, "_fire_cron_job", fire)
+        manual = await client.post(f"/api/projects/{project_id}/cron-jobs/{job_id}/run-now")
+        assert manual.status_code == 200
+        assert manual.json()["task_id"] == str(fire.return_value)
+        fire.assert_awaited_once_with(uuid.UUID(job_id), allow_disabled=True)
         assert (await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json={"thinking_level": "invalid"})).status_code == 422
         assert (await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json={"thinking_level": None})).status_code == 422
         assert (await client.post(f"/api/projects/{project_id}/cron-jobs", json={**body, "interval_minutes": 0})).status_code == 422

@@ -418,9 +418,15 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
     await cron_scheduler._fire_cron_job(enabled_id)
     assert trigger.await_count == 2
     assert trigger.await_args.args[0] != first_task_id
+    paused_task_id = await cron_scheduler._fire_cron_job(disabled_id, allow_disabled=True)
+    assert paused_task_id == trigger.await_args.args[0]
+    assert trigger.await_count == 3
     async with session_factory() as db:
         loaded = await db.get(CronJob, enabled_id)
         assert loaded.last_status == "triggered"
         task = await db.get(Task, first_task_id)
         assert task.model == "gpt-example"
         assert task.thinking_level == "high"
+        paused_job = await db.get(CronJob, disabled_id)
+        assert paused_job.enabled is False
+        assert (await db.get(Task, paused_task_id)).cron_job_id == disabled_id

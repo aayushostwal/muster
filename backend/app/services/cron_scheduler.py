@@ -96,12 +96,12 @@ def sync_jobs_from_db() -> None:
             replace_existing=True,
             misfire_grace_time=60,
         )
-async def _fire_cron_job(cron_job_id: uuid.UUID) -> uuid.UUID | None:
+async def _fire_cron_job(cron_job_id: uuid.UUID, *, allow_disabled: bool = False) -> uuid.UUID | None:
     """Create a Task for this firing and hand it to the process manager --
     identical to the manual task-creation path (see docs/SPEC.md)."""
     async with SessionLocal() as db:
         cron_job = await db.get(CronJob, cron_job_id)
-        if cron_job is None or not cron_job.enabled:
+        if cron_job is None or (not cron_job.enabled and not allow_disabled):
             return
         task = Task(
             project_id=cron_job.project_id,
