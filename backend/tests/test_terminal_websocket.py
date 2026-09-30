@@ -5,6 +5,10 @@ import base64
 import threading
 import uuid
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
+
+import anyio
+import pytest
 
 from fastapi import FastAPI
 from starlette.testclient import TestClient
@@ -61,3 +65,35 @@ def test_terminal_websocket_rejects_disallowed_origin(monkeypatch):
                 raise AssertionError("disallowed terminal origin connected")
         except WebSocketDisconnect as exc:
             assert exc.code == 1008
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_detaches_when_connection_scope_is_cancelled(monkeypatch):
+    monkeypatch.setattr(settings, "interactive_terminal_enabled", True)
+    task_id = uuid.uuid4()
+    queue = asyncio.Queue()
+    monkeypatch.setattr(terminal_manager, "attach", AsyncMock(return_value=("client-1", queue)))
+    detached = anyio.Event()
+    async def detach_client(*_):
+        # Real detachment may yield while handing control to another tab.
+        await anyio.sleep(0)
+        detached.set()
+    detach = AsyncMock(side_effect=detach_client)
+    monkeypatch.setattr(terminal_manager, "detach", detach)
+    with anyio.CancelScope() as connection_scope:
+        first = True
+        async def receive_frame():
+            nonlocal first
+            if first:
+                first = False
+                return {"type": "attach"}
+            connection_scope.cancel()
+            await anyio.sleep_forever()
+        websocket = SimpleNamespace(
+            headers={"origin": "http://localhost:3000"},
+            client=SimpleNamespace(host="127.0.0.1"),
+            accept=AsyncMock(), receive_json=receive_frame,
+        )
+        await terminal_ws.task_terminal_socket(websocket, task_id)
+    assert detached.is_set(), "connection cancellation skipped terminal detachment"
+    detach.assert_awaited_once_with(task_id, "client-1")
