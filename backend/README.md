@@ -118,6 +118,27 @@ prompt.
 
 ## Running it
 
+Recurring agents support a daily run window in **Recurring agents → Edit**.
+For 11 AM–9 PM, enable **Limit to a daily run window**, set start `11:00`,
+end `21:00`, and timezone `Asia/Kolkata`. Intervals start at the opening each
+day; the closing time is exclusive. Overnight windows are supported. Without
+a window, intervals keep their existing continuous cadence. Cron expressions
+use the configured timezone; the window also filters their scheduled runs.
+**Run now** bypasses the window and works for paused jobs. A run already in
+progress at closing time is allowed to finish.
+
+Recurring terminals close when their native CLI turn finishes. The final
+summary and terminal output remain available for review; manual task terminals
+are unaffected. Source tasks created through the Muster MCP tool must include
+a stable `source_key` during recurring runs: `jira:<issue-id>` or
+`slack:<channel-id>:<root-thread-timestamp>`. The same key in the same project
+returns the existing task, including completed tasks, without launching it again.
+For multiple Jira sites or Slack workspaces, include the site/workspace in the
+key. Do not use a run timestamp, title, or changing issue status as the key.
+Manual API task creation may omit it. Existing unkeyed tasks are not automatically
+matched, and deleting a task releases its key. Apply migration
+`0015_recurring_run_controls` before loading the updated backend.
+
 ```bash
 pip install -r requirements.txt
 alembic upgrade head

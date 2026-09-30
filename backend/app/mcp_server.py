@@ -117,6 +117,7 @@ def _task_summary(task: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "id",
         "project_id",
+        "source_key",
         "title",
         "status",
         "attention_reason",
@@ -171,15 +172,23 @@ def build_server(api: MusterApiClient | None = None) -> MCPServer:
         runtime_mode: RuntimeMode | None = None,
         model: str | None = None,
         tags: list[str] | None = None,
+        source_key: Annotated[str | None, Field(min_length=1, max_length=300)] = None,
     ) -> dict[str, Any]:
         """Create and immediately dispatch a task in a project.
 
         ``project`` accepts an exact project name or UUID. The project supplies
         the working directory, skills, MCP connectors, and tool policy. Omit
         backend/runtime/model to use the project's configured defaults.
+        For recurring intake, always supply a stable source_key such as
+        jira:<issue-id> or slack:<channel-id>:<thread-ts>. Reusing that key in
+        the same project returns the existing task without dispatching it,
+        regardless of status. Never resume/restart that task just because it
+        appeared in another polling iteration.
         """
 
         selected = await client.resolve_project(project)
+        if os.environ.get("MUSTER_RECURRING_RUN") == "1" and not source_key:
+            raise ToolError("Recurring runs must supply a stable source_key when creating tasks")
         body: dict[str, Any] = {
             "title": title.strip(),
             "initial_prompt": prompt.strip(),
@@ -191,6 +200,8 @@ def build_server(api: MusterApiClient | None = None) -> MCPServer:
             raise ToolError("Task prompt must not be empty")
         if backend is not None:
             body["backend"] = backend
+        if source_key is not None:
+            body["source_key"] = source_key
         if runtime_mode is not None:
             body["runtime_mode"] = runtime_mode
         if model is not None:

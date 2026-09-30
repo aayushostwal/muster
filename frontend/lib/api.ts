@@ -281,6 +281,9 @@ export const api = {
       name: string;
       schedule_expr: string;
       interval_minutes?: number | null;
+      timezone?: string;
+      window_start?: string | null;
+      window_end?: string | null;
       prompt: string;
       backend: AgentBackend;
       model?: string | null;
@@ -291,7 +294,7 @@ export const api = {
       method: "POST",
       ...json(body),
     }),
-  updateCron: (projectId: string, id: string, body: Partial<Pick<CronJob, "name" | "schedule_expr" | "interval_minutes" | "prompt" | "backend" | "model" | "thinking_level">>) =>
+  updateCron: (projectId: string, id: string, body: Partial<Pick<CronJob, "name" | "schedule_expr" | "interval_minutes" | "timezone" | "window_start" | "window_end" | "prompt" | "backend" | "model" | "thinking_level">>) =>
     request<CronJob>(`/api/projects/${projectId}/cron-jobs/${id}`, { method: "PATCH", ...json(body) }),
   toggleCron: (projectId: string, id: string, enabled: boolean) =>
     request<CronJob>(`/api/projects/${projectId}/cron-jobs/${id}/${enabled ? "enable" : "disable"}`, {

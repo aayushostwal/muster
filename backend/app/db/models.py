@@ -217,6 +217,9 @@ class ProjectArtifact(Base):
 
 class Task(Base):
     __tablename__ = "tasks"
+    __table_args__ = (UniqueConstraint("project_id", "source_key", name="uq_task_project_source"),)
+
+    source_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
     id: Mapped[uuid.UUID] = _uuid_col()
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -587,6 +590,9 @@ class CronJob(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     schedule_expr: Mapped[str] = mapped_column(String(100), nullable=False)  # standard 5-field cron
     interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timezone: Mapped[str] = mapped_column(String(100), default="Asia/Kolkata", server_default="Asia/Kolkata")
+    window_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    window_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)

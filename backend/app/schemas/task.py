@@ -29,6 +29,13 @@ class TaskTagsMixin(BaseModel):
 
 
 class TaskCreate(TaskTagsMixin):
+    source_key: str | None = Field(default=None, min_length=1, max_length=300)
+
+    @field_validator("source_key", mode="before")
+    @classmethod
+    def normalize_source_key(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
     title: str
     initial_prompt: str
     backend: AgentBackend | None = None
@@ -70,6 +77,7 @@ class TaskRead(BaseModel):
 
     id: uuid.UUID
     project_id: uuid.UUID
+    source_key: str | None = None
     title: str
     initial_prompt: str
     status: TaskStatus

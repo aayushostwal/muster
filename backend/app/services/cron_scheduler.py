@@ -31,6 +31,7 @@ from app.config import settings
 from app.db.models import CronJob, RuntimeMode, Task, TaskStatus
 from app.db.session import SessionLocal
 from app.services.process_manager import process_manager
+from app.services.recurring_schedule import WindowIntervalTrigger, in_run_window
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,14 @@ scheduler = AsyncIOScheduler()
 _sync_engine = create_engine(settings.database_url, echo=False)
 
 _JOB_ID_PREFIX = "cron_job:"
+_INTAKE_GUIDANCE = (
+    "\n\nMuster recurring intake rules: When creating tasks from external items, always "
+    "pass a stable source_key to Muster create_task: jira:<issue-id> or "
+    "slack:<channel-id>:<root-thread-timestamp>. Use the same key on every iteration, "
+    "never a run ID or title. An existing key returns the original task even if done. "
+    "Do not restart or resume an existing task just because it was found again. "
+    "Finish this run after processing the current batch; do not start a persistent loop."
+)
 
 
 def is_valid_cron(expr: str) -> bool:
@@ -67,7 +76,11 @@ def sync_jobs_from_db() -> None:
             if interval_minutes < 1:
                 logger.warning("skipping cron job %s: invalid interval", cron_job.id)
                 continue
-            trigger = IntervalTrigger(minutes=interval_minutes, start_date=getattr(cron_job, "created_at", None))
+            trigger = (
+                WindowIntervalTrigger(interval_minutes, cron_job.window_start, cron_job.window_end, cron_job.timezone)
+                if getattr(cron_job, "window_start", None)
+                else IntervalTrigger(minutes=interval_minutes, start_date=getattr(cron_job, "created_at", None))
+            )
             scheduler.add_job(
                 _fire_cron_job, trigger=trigger, id=f"{_JOB_ID_PREFIX}{cron_job.id}",
                 args=[cron_job.id], replace_existing=True, max_instances=1,
@@ -81,7 +94,7 @@ def sync_jobs_from_db() -> None:
             )
             continue
         try:
-            trigger = CronTrigger.from_crontab(cron_job.schedule_expr)
+            trigger = CronTrigger.from_crontab(cron_job.schedule_expr, timezone=getattr(cron_job, "timezone", "Asia/Kolkata"))
         except ValueError:
             logger.warning(
                 "skipping cron job %s (%s): unparseable schedule %r",
@@ -103,10 +116,12 @@ async def _fire_cron_job(cron_job_id: uuid.UUID, *, allow_disabled: bool = False
         cron_job = await db.get(CronJob, cron_job_id)
         if cron_job is None or (not cron_job.enabled and not allow_disabled):
             return
+        if not allow_disabled and not in_run_window(cron_job, datetime.now(timezone.utc)):
+            return
         task = Task(
             project_id=cron_job.project_id,
             title=f"[cron] {cron_job.name}",
-            initial_prompt=cron_job.prompt,
+            initial_prompt=cron_job.prompt + _INTAKE_GUIDANCE,
             backend=cron_job.backend,
             model=cron_job.model,
             thinking_level=cron_job.thinking_level,

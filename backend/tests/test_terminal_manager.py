@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import sqlite3
+import sys
 import uuid
 from collections import deque
 from pathlib import Path
@@ -30,6 +31,7 @@ from app.services import terminal_manager as terminal_manager_module
 from app.services import cron_scheduler
 from app.services.runtime_manager import RuntimeManager
 from app.services.process_manager import ProcessManager
+from app.services.terminal_session import TerminalSession
 from app.services.terminal_manager import (
     RunningTerminal,
     TerminalClient,
@@ -215,7 +217,8 @@ async def test_cron_launches_claude_terminal_in_project_primary_directory(
     session = _FakeTerminalSession.instances[-1]
     assert session.started is True
     assert session.cwd == str(tmp_path)
-    assert session.argv[-1] == "Check Jira and Slack"
+    assert session.argv[-1].startswith("Check Jira and Slack\n\n")
+    assert "source_key" in session.argv[-1]
     assert "-p" not in session.argv
     assert "--session-id" in session.argv
     async with session_local() as db:
@@ -224,7 +227,69 @@ async def test_cron_launches_claude_terminal_in_project_primary_directory(
         assert task.status == TaskStatus.running
         assert task.cron_job_id == job_id
 
-    await manager.shutdown()
+    running = manager._running[task_id]
+    completion_file = Path(session.env["MUSTER_TURN_COMPLETE_FILE"])
+    completion_file.write_text('{"message": "Triage finished", "failed": false}')
+    session.write = AsyncMock()
+    exit_done = asyncio.Event()
+    async def exit_session():
+        await manager._on_exit(running, 0)
+        exit_done.set()
+        return 0
+    session.wait = exit_session
+    await asyncio.wait_for(asyncio.shield(running.completion_task), timeout=2)
+    await asyncio.wait_for(exit_done.wait(), timeout=2)
+    assert task_id not in manager._running
+    session.write.assert_awaited_once_with(b"/exit\r")
+    assert not completion_file.exists()
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        assert task.status == TaskStatus.waiting_on_you
+        assert task.attention_reason == "awaiting_review"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accept_exit", [True, False])
+async def test_recurring_native_completion_closes_real_pty_and_keeps_output(
+    terminal_manager, monkeypatch, tmp_path, accept_exit
+):
+    manager, session_local = terminal_manager
+    fake_cli = tmp_path / "claude"
+    fake_cli.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, shlex, subprocess, sys\n"
+        "settings = json.loads(sys.argv[sys.argv.index('--settings') + 1])\n"
+        "command = settings['hooks']['Stop'][0]['hooks'][0]['command']\n"
+        "print('Triage complete', flush=True)\n"
+        "subprocess.run(shlex.split(command), input=json.dumps({'hook_event_name': 'Stop', 'last_assistant_message': 'Triage complete'}), text=True, check=True)\n"
+        + ("while input() != '/exit': pass\n" if accept_exit else "while True: input()\n")
+    )
+    fake_cli.chmod(0o700)
+    monkeypatch.setattr(terminal_manager_module.settings, "claude_code_bin", str(fake_cli))
+    monkeypatch.setattr(terminal_manager_module, "TerminalSession", TerminalSession)
+    task_id = await _create_task(session_local, backend=AgentBackend.claude_code)
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        job = CronJob(project_id=task.project_id, name="triage", schedule_expr="0 * * * *", prompt="triage", backend=AgentBackend.claude_code)
+        db.add(job)
+        await db.flush()
+        task.cron_job_id = job.id
+        await db.commit()
+    await manager.trigger(task_id)
+    running = manager._running[task_id]
+    await asyncio.wait_for(running.session.wait(), timeout=5)
+    assert task_id not in manager._running
+    assert running.session.returncode == 0 if accept_exit else running.session.returncode < 0
+    assert "Triage complete" in running.log_path.read_text()
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        assert task.status == TaskStatus.waiting_on_you
+    _, queue = await manager.attach(task_id, cols=80, rows=24, after_seq=0)
+    events = []
+    while not queue.empty():
+        events.append(await queue.get())
+    assert events[-1]["type"] == "exit"
+    assert events[-1]["archived"] is True
 
 
 @pytest.mark.asyncio

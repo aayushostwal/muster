@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.db.models import AgentProfile, ContextSnapshot, Message, MessageSender, Project, ProjectCapabilityOverride, RuntimeMode, Task, TaskEvent, TaskInvocation, TaskRunAttempt, TaskStatus
@@ -56,8 +57,19 @@ async def list_tasks(
 
 
 @router.post("/projects/{project_id}/tasks", status_code=201, response_model=TaskRead)
-async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession = Depends(get_db)):
+async def create_task(project_id: uuid.UUID, body: TaskCreate, response: Response, db: AsyncSession = Depends(get_db)):
     project = await _get_project_or_404(db, project_id)
+
+    async def existing_source_task() -> Task | None:
+        return (await db.execute(select(Task).where(
+            Task.project_id == project_id, Task.source_key == body.source_key,
+        ))).scalar_one_or_none()
+
+    if body.source_key is not None:
+        existing = await existing_source_task()
+        if existing is not None:
+            response.status_code = 200
+            return existing
     from app.services import task_tags
 
     try:
@@ -84,6 +96,7 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
         raise HTTPException(status_code=422, detail="Interactive terminal runtime is disabled")
     task = Task(
         project_id=project_id,
+        source_key=body.source_key,
         title=body.title,
         initial_prompt=body.initial_prompt,
         status=TaskStatus.queued,
@@ -97,7 +110,16 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, db: AsyncSession 
         context_strategy=body.context_strategy or project.default_context_strategy,
     )
     db.add(task)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        if body.source_key is not None:
+            existing = await existing_source_task()
+            if existing is not None:
+                response.status_code = 200
+                return existing
+        raise
     await db.refresh(task)
     await process_manager.trigger(task.id)
     return task

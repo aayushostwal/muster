@@ -8,6 +8,8 @@ import logging
 import os
 import shutil
 import sqlite3
+import shlex
+import sys
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -67,6 +69,9 @@ class RunningTerminal:
     restarting: bool = False
     shutting_down: bool = False
     session_capture_task: asyncio.Task | None = None
+    completion_task: asyncio.Task | None = None
+    turn_finished: bool = False
+    turn_failed: bool = False
 
 
 class TerminalManager:
@@ -113,6 +118,16 @@ class TerminalManager:
                 prompt=prompt or task.initial_prompt,
                 session_id=native_session_id,
             )
+            recurring = task.cron_job_id is not None
+            if recurring:
+                hook = [sys.executable, str(Path(__file__).with_name("recurring_terminal_hook.py"))]
+                if task.backend == AgentBackend.claude_code:
+                    handler = {"hooks": [{"type": "command", "command": shlex.join(hook), "timeout": 10}]}
+                    command.argv[1:1] = ["--settings", json.dumps({"hooks": {
+                        "Stop": [handler], "StopFailure": [handler],
+                    }})]
+                else:
+                    command.argv[1:1] = ["-c", "notify=" + json.dumps(hook)]
 
             if task.git_baseline_captured_at is None:
                 from app.services.pr_delivery import capture_git_baseline
@@ -169,6 +184,11 @@ class TerminalManager:
                 await self._on_exit(running, exit_code)
 
             runtime_env = {**os.environ, **secrets}
+            completion_file = terminal_dir / f"{invocation.id}.complete.json"
+            if recurring:
+                runtime_env["MUSTER_TURN_COMPLETE_FILE"] = str(completion_file)
+                runtime_env["MUSTER_RECURRING_RUN"] = "1"
+                running.temp_paths += (completion_file, completion_file.with_suffix(".tmp"))
             codex_home: Path | None = None
             known_codex_sessions: set[str] = set()
             if task.backend == AgentBackend.codex:
@@ -199,6 +219,10 @@ class TerminalManager:
                 {"type": "invocation", "invocation": _serialize_invocation(invocation)},
             )
             await session.start()
+            if recurring:
+                running.completion_task = asyncio.create_task(
+                    self._close_after_recurring_turn(running, completion_file)
+                )
             if codex_home is not None:
                 running.session_capture_task = asyncio.create_task(
                     self._capture_codex_session_id(
@@ -210,6 +234,8 @@ class TerminalManager:
         except Exception as exc:  # noqa: BLE001 - any runtime setup failure must finalize the task
             self._running.pop(task_id, None)
             if running is not None:
+                if running.completion_task:
+                    running.completion_task.cancel()
                 running.log_file.close()
                 _cleanup_temp_paths(running.temp_paths)
             else:
@@ -219,6 +245,36 @@ class TerminalManager:
                 invocation.id,
                 f"Unable to start interactive terminal: {exc}",
             )
+
+    async def _close_after_recurring_turn(self, running: RunningTerminal, completion_file: Path) -> None:
+        try:
+            while self._running.get(running.task_id) is running:
+                await asyncio.sleep(0.25)
+                if not completion_file.exists():
+                    continue
+                payload = json.loads(completion_file.read_text(encoding="utf-8"))
+                running.turn_finished = True
+                running.turn_failed = bool(payload.get("failed"))
+                message = payload.get("message")
+                if message:
+                    async with SessionLocal() as db:
+                        db.add(Message(task_id=running.task_id, sender=MessageSender.agent, content_text=message))
+                        await db.commit()
+                if running.session is not None:
+                    # Request a normal CLI exit first; bound it so a stuck TUI
+                    # cannot keep an already-finished recurring process alive.
+                    await running.session.write(b"/exit\r")
+                    try:
+                        await asyncio.wait_for(asyncio.shield(running.session.wait()), timeout=3)
+                    except asyncio.TimeoutError:
+                        await running.session.terminate()
+                return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("failed to close completed recurring terminal %s", running.task_id)
+            if running.session is not None:
+                await running.session.terminate()
 
     async def _capture_codex_session_id(
         self,
@@ -503,6 +559,8 @@ class TerminalManager:
         running_sessions = list(self._running.values())
         for running in running_sessions:
             running.shutting_down = True
+            if running.completion_task is not None:
+                running.completion_task.cancel()
         await asyncio.gather(
             *(
                 running.session.terminate()
@@ -523,6 +581,8 @@ class TerminalManager:
     async def _on_exit(self, running: RunningTerminal, exit_code: int) -> None:
         if self._running.get(running.task_id) is not running:
             return
+        if running.completion_task is not None:
+            running.completion_task.cancel()
         try:
             running.log_file.close()
         except OSError:
@@ -543,7 +603,7 @@ class TerminalManager:
             attention_reason = None
             completed = True
             invocation_status = status.value
-        elif exit_code == 0:
+        elif (exit_code == 0 or running.turn_finished) and not running.turn_failed:
             status = TaskStatus.waiting_on_you
             attention_reason = "awaiting_review"
             completed = False

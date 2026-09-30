@@ -715,6 +715,8 @@ class ProcessManager:
         )
 
         runtime_env = {**os.environ, **secrets}
+        if task.cron_job_id is not None:
+            runtime_env["MUSTER_RECURRING_RUN"] = "1"
         runtime_temp_paths: list[Path] = list(_command_temp_paths(cmd.argv))
         if task.backend == AgentBackend.claude_code:
             # One-shot runs must discover MCP tools before their first prompt.
