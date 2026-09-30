@@ -586,6 +586,7 @@ class CronJob(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     schedule_expr: Mapped[str] = mapped_column(String(100), nullable=False)  # standard 5-field cron
+    interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)

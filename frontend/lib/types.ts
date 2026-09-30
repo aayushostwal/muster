@@ -179,6 +179,7 @@ export interface CronJob {
   project_id: string;
   name: string;
   schedule_expr: string;
+  interval_minutes: number | null;
   prompt: string;
   backend: AgentBackend;
   model: string | null;

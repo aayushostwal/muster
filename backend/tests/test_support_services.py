@@ -356,6 +356,27 @@ def test_cron_sync_replaces_jobs_and_skips_invalid_entries(monkeypatch):
     scheduler.add_job.assert_not_called()
 
 
+def test_cron_sync_schedules_exact_interval(monkeypatch):
+    job = SimpleNamespace(id=uuid.uuid4(), name="triage", interval_minutes=90, created_at=datetime.now(timezone.utc))
+
+    class Result:
+        def scalars(self): return self
+        def all(self): return [job]
+
+    class FakeSession:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def execute(self, statement): return Result()
+
+    scheduler = SimpleNamespace(get_jobs=Mock(return_value=[]), remove_job=Mock(), add_job=Mock())
+    monkeypatch.setattr(cron_scheduler, "scheduler", scheduler)
+    monkeypatch.setattr(cron_scheduler, "Session", lambda engine: FakeSession())
+    cron_scheduler.sync_jobs_from_db()
+    call = scheduler.add_job.call_args
+    assert call.kwargs["trigger"].interval.total_seconds() == 5400
+    assert call.kwargs["id"] == f"cron_job:{job.id}"
+
+
 @pytest.mark.asyncio
 async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -391,6 +412,10 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
     trigger.assert_not_awaited()
     await cron_scheduler._fire_cron_job(enabled_id)
     trigger.assert_awaited_once()
+    first_task_id = trigger.await_args.args[0]
+    await cron_scheduler._fire_cron_job(enabled_id)
+    assert trigger.await_count == 2
+    assert trigger.await_args.args[0] != first_task_id
     async with session_factory() as db:
         loaded = await db.get(CronJob, enabled_id)
         assert loaded.last_status == "triggered"
