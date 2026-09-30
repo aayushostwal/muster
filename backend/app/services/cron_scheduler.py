@@ -109,6 +109,7 @@ async def _fire_cron_job(cron_job_id: uuid.UUID) -> uuid.UUID | None:
             initial_prompt=cron_job.prompt,
             backend=cron_job.backend,
             model=cron_job.model,
+            thinking_level=cron_job.thinking_level,
             status=TaskStatus.queued,
             runtime_mode=RuntimeMode.structured,
             cron_job_id=cron_job.id,

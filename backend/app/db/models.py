@@ -590,6 +590,7 @@ class CronJob(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     backend: Mapped[AgentBackend] = mapped_column(Enum(AgentBackend, name="agent_backend"))
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    thinking_level: Mapped[str] = mapped_column(String(20), default="medium", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_status: Mapped[str | None] = mapped_column(String(50), nullable=True)

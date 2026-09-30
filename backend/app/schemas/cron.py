@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +17,7 @@ class CronJobCreate(BaseModel):
     prompt: str
     backend: AgentBackend
     model: str | None = None
+    thinking_level: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
 
 
 class CronJobUpdate(BaseModel):
@@ -25,6 +27,7 @@ class CronJobUpdate(BaseModel):
     prompt: str | None = None
     backend: AgentBackend | None = None
     model: str | None = None
+    thinking_level: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
 
 class CronJobRead(BaseModel):
@@ -38,6 +41,7 @@ class CronJobRead(BaseModel):
     prompt: str
     backend: AgentBackend
     model: str | None
+    thinking_level: str
     enabled: bool
     last_run_at: datetime | None
     last_status: str | None

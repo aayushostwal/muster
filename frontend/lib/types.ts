@@ -183,6 +183,7 @@ export interface CronJob {
   prompt: string;
   backend: AgentBackend;
   model: string | null;
+  thinking_level: "low" | "medium" | "high" | "xhigh" | "max";
   enabled: boolean;
   last_run_at: string | null;
   last_status: string | null;

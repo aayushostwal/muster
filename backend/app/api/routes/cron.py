@@ -76,6 +76,8 @@ async def update_cron_job(
         raise HTTPException(status_code=422, detail="Enter a valid schedule")
     if body.prompt is not None and not body.prompt.strip():
         raise HTTPException(status_code=422, detail="Enter a prompt")
+    if "thinking_level" in body.model_fields_set and body.thinking_level is None:
+        raise HTTPException(status_code=422, detail="Choose a thinking level")
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(cron_job, field, value)
     await db.commit()

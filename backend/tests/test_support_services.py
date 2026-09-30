@@ -393,6 +393,8 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
             schedule_expr="0 9 * * *",
             prompt="report",
             backend=AgentBackend.codex,
+            model="gpt-example",
+            thinking_level="high",
             enabled=True,
         )
         disabled = CronJob(
@@ -419,3 +421,6 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
     async with session_factory() as db:
         loaded = await db.get(CronJob, enabled_id)
         assert loaded.last_status == "triggered"
+        task = await db.get(Task, first_task_id)
+        assert task.model == "gpt-example"
+        assert task.thinking_level == "high"
