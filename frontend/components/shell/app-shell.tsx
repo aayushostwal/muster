@@ -59,7 +59,7 @@ function SidebarContent({ close }: { close?: () => void }) {
             { href: "/registry/tools", label: "Tools", icon: Code2 },
             { href: "/registry/mcp", label: "MCP connectors", icon: Network },
             { href: "/registry/directories", label: "Directories", icon: FolderCode },
-            { href: "/integrations", label: "Jira & Slack schedule", icon: Clock3 },
+            { href: "/integrations", label: "Recurring agents", icon: Clock3 },
           ].map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;

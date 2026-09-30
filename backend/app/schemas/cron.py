@@ -4,14 +4,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.models import AgentBackend
 
 
 class CronJobCreate(BaseModel):
     name: str
-    schedule_expr: str
+    schedule_expr: str = "0 * * * *"
+    interval_minutes: int | None = Field(default=None, ge=1, le=525600)
     prompt: str
     backend: AgentBackend
     model: str | None = None
@@ -20,6 +21,7 @@ class CronJobCreate(BaseModel):
 class CronJobUpdate(BaseModel):
     name: str | None = None
     schedule_expr: str | None = None
+    interval_minutes: int | None = Field(default=None, ge=1, le=525600)
     prompt: str | None = None
     backend: AgentBackend | None = None
     model: str | None = None
@@ -32,6 +34,7 @@ class CronJobRead(BaseModel):
     project_id: uuid.UUID
     name: str
     schedule_expr: str
+    interval_minutes: int | None
     prompt: str
     backend: AgentBackend
     model: str | None

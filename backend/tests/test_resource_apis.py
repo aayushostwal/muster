@@ -138,6 +138,23 @@ async def test_cron_crud_syncs_scheduler(override_get_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recurring_agent_requires_working_directory_and_accepts_interval(override_get_db, monkeypatch):
+    monkeypatch.setattr(cron, "sync_jobs_from_db", lambda: None)
+    async with AsyncClient(transport=ASGITransport(app=_app(override_get_db)), base_url="http://test") as client:
+        project_id = await _project(client)
+        body = {"name": "triage", "prompt": "Review connected sources", "backend": "codex", "interval_minutes": 90}
+        assert (await client.post(f"/api/projects/{project_id}/cron-jobs", json=body)).status_code == 422
+        directory = await client.post("/api/directories", json={"name": "Work", "path": "/tmp/muster-work"})
+        assert directory.status_code == 201
+        bound = await client.post(f"/api/projects/{project_id}/directories", json={"directory_id": directory.json()["id"], "access_scope": "read_write"})
+        assert bound.status_code == 201
+        created = await client.post(f"/api/projects/{project_id}/cron-jobs", json=body)
+        assert created.status_code == 201
+        assert created.json()["interval_minutes"] == 90
+        assert (await client.post(f"/api/projects/{project_id}/cron-jobs", json={**body, "interval_minutes": 0})).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_directory_success_and_error_paths(override_get_db):
     async with AsyncClient(transport=ASGITransport(app=_app(override_get_db)), base_url="http://test") as client:
         project_id = await _project(client)

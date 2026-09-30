@@ -5,7 +5,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
   ChevronDown,
-  Clock3,
   Code2,
   ExternalLink,
   FileKey2,
@@ -26,7 +25,7 @@ import { EmptyState, ErrorState, Skeleton } from "@/components/ui/states";
 import { useToast } from "@/components/ui/toast";
 import { api } from "@/lib/api";
 import type { AgentBackend, Project, ToolRuleConfig } from "@/lib/types";
-import { backendLabel, cn, formatDateTime, formatRelativeTime } from "@/lib/utils";
+import { backendLabel, cn, formatRelativeTime } from "@/lib/utils";
 
 function Panel({ title, description, action, children }: { title: string; description: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -206,16 +205,8 @@ export function ArtifactPanel({ projectId }: { projectId: string }) {
 }
 
 export function CronPanel({ projectId }: { projectId: string }) {
-  const [open, setOpen] = useState(false); const [name, setName] = useState(""); const [schedule, setSchedule] = useState("0 9 * * 1-5"); const [prompt, setPrompt] = useState(""); const [backend, setBackend] = useState<AgentBackend>("claude_code"); const [model, setModel] = useState(""); const [error, setError] = useState("");
-  const queryClient = useQueryClient(); const toast = useToast();
-  const query = useQuery({ queryKey: ["cron", projectId], queryFn: () => api.cronJobs(projectId) });
-  const modelCatalog = useQuery({ queryKey: ["models", backend], queryFn: () => api.models(backend), enabled: open, staleTime: 60 * 60 * 1000 });
-  const create = useMutation({ mutationFn: () => api.createCron(projectId, { name: name.trim(), schedule_expr: schedule.trim(), prompt: prompt.trim(), backend, model: model.trim() || null }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["cron", projectId] }); setOpen(false); setName(""); setPrompt(""); toast("Schedule activated", "success"); }, onError: (cause: Error) => setError(cause.message) });
-  const toggle = useMutation({ mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.toggleCron(projectId, id, enabled), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cron", projectId] }), onError: (cause: Error) => toast(cause.message, "error") });
-  const remove = useMutation({ mutationFn: api.deleteCron.bind(null, projectId), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["cron", projectId] }); toast("Schedule removed", "success"); }, onError: (cause: Error) => toast(cause.message, "error") });
-  return <Panel title="Schedules" description="Recurring work that enters the same task board as manual requests." action={<Button variant="primary" size="sm" onClick={() => setOpen(true)}><Plus className="h-4 w-4" /> New schedule</Button>}>
-    {query.isPending ? <ListLoading /> : query.isError ? <ErrorState message={query.error.message} retry={() => query.refetch()} /> : query.data.items.length === 0 ? <EmptyState title="No recurring work" description="Create a cron schedule to launch routine agent tasks automatically." /> : <div className="space-y-2">{query.data.items.map((item) => <ResourceRow key={item.id} icon={<Clock3 className={cn("h-4 w-4", item.enabled && "text-signal-400")} />} title={item.name} meta={`${item.schedule_expr} · ${backendLabel(item.backend)}`} detail={<div className="space-y-3 text-xs text-slate-500"><p className="leading-5">{item.prompt}</p><p>Last run: {formatDateTime(item.last_run_at)}{item.last_status ? ` · ${item.last_status}` : ""}</p></div>} actions={<div className="flex items-center gap-1"><button role="switch" aria-checked={item.enabled} onClick={() => toggle.mutate({ id: item.id, enabled: !item.enabled })} className={cn("relative h-6 w-11 rounded-full border transition", item.enabled ? "border-signal-400/30 bg-signal-400/20" : "border-white/10 bg-white/[0.04]")}><motion.span layout className={cn("absolute top-1 h-3.5 w-3.5 rounded-full", item.enabled ? "left-6 bg-signal-400" : "left-1 bg-slate-600")} /></button><DeleteButton label={item.name} loading={remove.isPending} onDelete={() => remove.mutate(item.id)} /></div>} />)}</div>}
-    <Modal open={open} onClose={() => setOpen(false)} title="Create a schedule" description="Use a standard five-field cron expression." wide><form onSubmit={(event) => { event.preventDefault(); if (!name.trim() || schedule.trim().split(/\s+/).length !== 5 || !prompt.trim()) return setError("Enter a name, five-field cron expression, and task prompt."); setError(""); create.mutate(); }} className="space-y-5"><div className="grid gap-4 sm:grid-cols-2"><div><label className="label" htmlFor="cron-name">Schedule name</label><input id="cron-name" className="field" value={name} onChange={(e) => setName(e.target.value)} /></div><div><label className="label" htmlFor="cron-expression">Cron expression</label><input id="cron-expression" className="field font-mono" value={schedule} onChange={(e) => setSchedule(e.target.value)} /></div></div><div><label className="label" htmlFor="cron-prompt">Task prompt</label><textarea id="cron-prompt" className="field min-h-32" value={prompt} onChange={(e) => setPrompt(e.target.value)} /></div><div className="grid gap-4 sm:grid-cols-2"><div><label className="label">Backend</label><Select label="Select backend" value={backend} onChange={(value) => { setBackend(value as AgentBackend); setModel(""); }} options={[{ value: "claude_code", label: "Claude Code" }, { value: "codex", label: "Codex" }]} /></div><div><label className="label">Model <span className="text-slate-600">— optional</span></label><Select label={modelCatalog.isPending ? "Discovering models" : "Select a model"} value={model} onChange={setModel} options={[{ value: "", label: "Runtime default" }, ...(modelCatalog.data?.items.map((item) => ({ value: item.id, label: item.label, description: item.id })) ?? [])]} /></div></div><FormError message={error} /><div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary" loading={create.isPending}>Activate schedule</Button></div></form></Modal>
+  return <Panel title="Recurring agents" description="Run a prompt on a schedule using a fresh Codex or Claude CLI session each time." action={<Link href={`/integrations?project=${projectId}`}><Button variant="primary" size="sm"><Plus className="h-4 w-4" /> New recurring agent</Button></Link>}>
+    <p className="text-sm text-slate-400">Create and manage this project’s recurring agents from the global automation page.</p>
   </Panel>;
 }
 

@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import CronJob, Project
 from app.db.session import get_db
 from app.schemas.cron import CronJobCreate, CronJobRead, CronJobUpdate
-from app.services.cron_scheduler import sync_jobs_from_db
+from app.services.cron_scheduler import _fire_cron_job, sync_jobs_from_db
+from app.services.cron_scheduler import is_valid_cron
 
 router = APIRouter(prefix="/projects", tags=["cron"])
 
@@ -48,7 +49,13 @@ async def list_cron_jobs(project_id: uuid.UUID, db: AsyncSession = Depends(get_d
 async def create_cron_job(
     project_id: uuid.UUID, body: CronJobCreate, db: AsyncSession = Depends(get_db)
 ):
-    await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id)
+    if body.interval_minutes is not None and project.primary_directory_id is None:
+        raise HTTPException(status_code=422, detail="Choose a primary directory for this project before scheduling an agent")
+    if not body.prompt.strip() or not body.name.strip():
+        raise HTTPException(status_code=422, detail="Enter a name and prompt")
+    if body.interval_minutes is None and not is_valid_cron(body.schedule_expr):
+        raise HTTPException(status_code=422, detail="Enter a valid schedule")
     cron_job = CronJob(project_id=project_id, **body.model_dump())
     db.add(cron_job)
     await db.commit()
@@ -65,6 +72,10 @@ async def update_cron_job(
     db: AsyncSession = Depends(get_db),
 ):
     cron_job = await _get_cron_job_or_404(db, project_id, cron_id)
+    if body.schedule_expr is not None and not is_valid_cron(body.schedule_expr):
+        raise HTTPException(status_code=422, detail="Enter a valid schedule")
+    if body.prompt is not None and not body.prompt.strip():
+        raise HTTPException(status_code=422, detail="Enter a prompt")
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(cron_job, field, value)
     await db.commit()
@@ -95,6 +106,17 @@ async def disable_cron_job(
     await db.refresh(cron_job)
     sync_jobs_from_db()
     return cron_job
+
+
+@router.post("/{project_id}/cron-jobs/{cron_id}/run-now")
+async def run_cron_job_now(
+    project_id: uuid.UUID, cron_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    cron_job = await _get_cron_job_or_404(db, project_id, cron_id)
+    if not cron_job.enabled:
+        raise HTTPException(status_code=409, detail="Enable this agent before running it")
+    task_id = await _fire_cron_job(cron_id)
+    return {"task_id": task_id}
 
 
 @router.delete("/{project_id}/cron-jobs/{cron_id}", status_code=204)

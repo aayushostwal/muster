@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -23,7 +22,6 @@ from app.api.routes import (
     ws,
 )
 from app.services.cron_scheduler import scheduler, sync_jobs_from_db
-from app.services.integrations import run_integration_once
 from app.services.process_manager import process_manager
 
 
@@ -33,13 +31,7 @@ async def lifespan(app: FastAPI):
     await process_manager.reconcile_interrupted_tasks()
     scheduler.start()
     sync_jobs_from_db()
-    catchup_task = asyncio.create_task(run_integration_once())
     yield
-    catchup_task.cancel()
-    try:
-        await catchup_task
-    except asyncio.CancelledError:
-        pass
     scheduler.shutdown()
     await process_manager.shutdown()
 

@@ -279,6 +279,7 @@ export const api = {
     body: {
       name: string;
       schedule_expr: string;
+      interval_minutes?: number | null;
       prompt: string;
       backend: AgentBackend;
       model?: string | null;
@@ -292,6 +293,8 @@ export const api = {
     request<CronJob>(`/api/projects/${projectId}/cron-jobs/${id}/${enabled ? "enable" : "disable"}`, {
       method: "POST",
     }),
+  runCronNow: (projectId: string, id: string) =>
+    request<{ task_id: string }>(`/api/projects/${projectId}/cron-jobs/${id}/run-now`, { method: "POST" }),
   deleteCron: (projectId: string, id: string) =>
     request<void>(`/api/projects/${projectId}/cron-jobs/${id}`, { method: "DELETE" }),
 
