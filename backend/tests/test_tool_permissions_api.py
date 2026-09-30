@@ -13,6 +13,7 @@ from app.api.routes import projects, tools
 from app.db.models import (
     AgentBackend,
     AgentProfile,
+    CapabilityImport,
     GlobalMcpServer,
     GlobalTool,
     Project,
@@ -189,3 +190,41 @@ async def test_agents_skills_and_mcp_are_portable_across_runtimes(db_engine):
         assert bindings.agent_profiles["Reviewer"]["prompt"] == "Review carefully."
         assert bindings.skills == {"Release": "Validate rollback."}
         assert bindings.mcp_servers["docs"]["url"] == "https://mcp.example.test"
+
+
+@pytest.mark.asyncio
+async def test_claude_uses_native_imported_mcp_without_duplicate_config(db_engine, tmp_path):
+    session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    source = tmp_path / "claude.json"
+    source.write_text("{}")
+    async with session_factory() as db:
+        project = Project(name="Native MCP", default_backend=AgentBackend.claude_code)
+        imported = GlobalMcpServer(name="jira", config={"transport": "stdio", "command": "jira-mcp"})
+        manual = GlobalMcpServer(name="docs", config={"transport": "http", "url": "https://mcp.example.test"})
+        db.add_all([project, imported, manual])
+        await db.flush()
+        db.add(CapabilityImport(
+            resource_type="mcp", resource_id=imported.id, source_runtime="claude",
+            source_scope="user", source_locator=f"{source}#mcpServers.jira",
+            source_checksum="test",
+        ))
+        task = Task(project_id=project.id, title="Native MCP", initial_prompt="Search Jira", backend=AgentBackend.claude_code)
+        db.add(task)
+        await db.commit()
+        loaded = await process_manager._load_project(db, project.id)
+        assert loaded is not None
+        claude_bindings = await process_manager._bindings_for(db, loaded, task)
+        task.backend = AgentBackend.codex
+        codex_bindings = await process_manager._bindings_for(db, loaded, task)
+
+    assert "jira" not in claude_bindings.mcp_servers
+    assert "docs" in claude_bindings.mcp_servers
+    assert "jira" in codex_bindings.mcp_servers
+
+    source.unlink()
+    async with session_factory() as db:
+        loaded = await process_manager._load_project(db, project.id)
+        assert loaded is not None
+        task.backend = AgentBackend.claude_code
+        fallback_bindings = await process_manager._bindings_for(db, loaded, task)
+    assert "jira" in fallback_bindings.mcp_servers

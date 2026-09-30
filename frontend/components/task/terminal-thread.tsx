@@ -348,15 +348,13 @@ function backendForMessage(
   return invocations.find((invocation) => invocation.id === invocationId)?.backend ?? fallback;
 }
 
-export function TerminalFrame({ children }: { children: ReactNode }) {
+export function TerminalFrame({ children, interactive = true }: { children: ReactNode; interactive?: boolean }) {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#05070b]">
       <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-[#090b10] px-3" aria-hidden="true">
-        <span className="h-2 w-2 rounded-full bg-red-400/55" />
-        <span className="h-2 w-2 rounded-full bg-amber-400/55" />
-        <span className="h-2 w-2 rounded-full bg-signal-400/55" />
-        <span className="ml-2 flex items-center gap-1.5 font-mono text-[0.56rem] uppercase tracking-[0.12em] text-slate-700">
-          <Sparkles className="h-3 w-3" /> live agent terminal
+        {interactive && <><span className="h-2 w-2 rounded-full bg-red-400/55" /><span className="h-2 w-2 rounded-full bg-amber-400/55" /><span className="h-2 w-2 rounded-full bg-signal-400/55" /></>}
+        <span className="flex items-center gap-1.5 font-mono text-[0.56rem] uppercase tracking-[0.12em] text-slate-500">
+          <Sparkles className="h-3 w-3" /> {interactive ? "Live agent terminal" : "Agent run output"}
         </span>
       </div>
       <div className="min-h-0 flex-1">{children}</div>
