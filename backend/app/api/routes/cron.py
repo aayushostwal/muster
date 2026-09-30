@@ -19,6 +19,13 @@ from app.services.cron_scheduler import _fire_cron_job, sync_jobs_from_db
 from app.services.cron_scheduler import is_valid_cron
 
 router = APIRouter(prefix="/projects", tags=["cron"])
+global_router = APIRouter(tags=["cron"])
+
+
+@global_router.get("/cron-jobs")
+async def list_all_cron_jobs(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(CronJob).order_by(CronJob.created_at.desc()))).scalars().all()
+    return {"items": [CronJobRead.model_validate(row) for row in rows]}
 
 
 async def _get_project_or_404(db: AsyncSession, project_id: uuid.UUID) -> Project:
@@ -114,10 +121,8 @@ async def disable_cron_job(
 async def run_cron_job_now(
     project_id: uuid.UUID, cron_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
-    cron_job = await _get_cron_job_or_404(db, project_id, cron_id)
-    if not cron_job.enabled:
-        raise HTTPException(status_code=409, detail="Enable this agent before running it")
-    task_id = await _fire_cron_job(cron_id)
+    await _get_cron_job_or_404(db, project_id, cron_id)
+    task_id = await _fire_cron_job(cron_id, allow_disabled=True)
     return {"task_id": task_id}
 
 
