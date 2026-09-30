@@ -111,7 +111,11 @@ async def _fire_cron_job(cron_job_id: uuid.UUID, *, allow_disabled: bool = False
             model=cron_job.model,
             thinking_level=cron_job.thinking_level,
             status=TaskStatus.queued,
-            runtime_mode=RuntimeMode.structured,
+            runtime_mode=(
+                RuntimeMode.interactive
+                if settings.interactive_terminal_enabled
+                else RuntimeMode.structured
+            ),
             cron_job_id=cron_job.id,
         )
         db.add(task)

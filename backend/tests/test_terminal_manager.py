@@ -14,7 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.models import (
+    AccessScope,
     AgentBackend,
+    CronJob,
+    DirectoryBinding,
+    DirectoryResource,
     Project,
     RuntimeMode,
     Task,
@@ -23,6 +27,9 @@ from app.db.models import (
 )
 from app.services.agent_backends.base import AdapterBindings
 from app.services import terminal_manager as terminal_manager_module
+from app.services import cron_scheduler
+from app.services.runtime_manager import RuntimeManager
+from app.services.process_manager import ProcessManager
 from app.services.terminal_manager import (
     RunningTerminal,
     TerminalClient,
@@ -164,6 +171,60 @@ def terminal_manager(db_engine, monkeypatch, tmp_path):
         _latest_user_prompt=AsyncMock(return_value=None),
     )
     return TerminalManager(structured), session_local
+
+
+@pytest.mark.asyncio
+async def test_cron_launches_claude_terminal_in_project_primary_directory(
+    terminal_manager, monkeypatch, tmp_path
+):
+    manager, session_local = terminal_manager
+    manager._structured = ProcessManager()
+    monkeypatch.setattr(cron_scheduler, "SessionLocal", session_local)
+    monkeypatch.setattr("app.services.runtime_manager.SessionLocal", session_local)
+    monkeypatch.setattr(terminal_manager_module.settings, "interactive_terminal_enabled", True)
+    monkeypatch.setattr(
+        cron_scheduler, "process_manager", RuntimeManager(manager._structured, manager)
+    )
+    async with session_local() as db:
+        directory = DirectoryResource(name="Project root", path=str(tmp_path))
+        db.add(directory)
+        await db.flush()
+        project = Project(name="Recurring Claude", default_backend=AgentBackend.claude_code)
+        project.primary_directory_id = directory.id
+        db.add(project)
+        await db.flush()
+        db.add(DirectoryBinding(
+            project_id=project.id,
+            directory_id=directory.id,
+            path=str(tmp_path),
+            access_scope=AccessScope.read_write,
+        ))
+        job = CronJob(
+            project_id=project.id,
+            name="triage",
+            schedule_expr="0 9 * * *",
+            prompt="Check Jira and Slack",
+            backend=AgentBackend.claude_code,
+            enabled=True,
+        )
+        db.add(job)
+        await db.commit()
+        job_id = job.id
+
+    task_id = await cron_scheduler._fire_cron_job(job_id)
+    session = _FakeTerminalSession.instances[-1]
+    assert session.started is True
+    assert session.cwd == str(tmp_path)
+    assert session.argv[-1] == "Check Jira and Slack"
+    assert "-p" not in session.argv
+    assert "--session-id" in session.argv
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        assert task.runtime_mode == RuntimeMode.interactive
+        assert task.status == TaskStatus.running
+        assert task.cron_job_id == job_id
+
+    await manager.shutdown()
 
 
 @pytest.mark.asyncio

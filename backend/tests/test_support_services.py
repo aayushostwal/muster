@@ -378,7 +378,11 @@ def test_cron_sync_schedules_exact_interval(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
+@pytest.mark.parametrize("terminal_enabled", [False, True])
+@pytest.mark.parametrize("backend", [AgentBackend.codex, AgentBackend.claude_code])
+async def test_cron_fire_selects_available_runtime(db_engine, monkeypatch, terminal_enabled, backend):
+    monkeypatch.setattr(settings, "interactive_terminal_enabled", terminal_enabled)
+    monkeypatch.setattr(settings, "default_task_runtime_mode", "structured")
     session_factory = async_sessionmaker(db_engine, expire_on_commit=False)
     monkeypatch.setattr(cron_scheduler, "SessionLocal", session_factory)
     trigger = AsyncMock()
@@ -392,7 +396,7 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
             name="daily",
             schedule_expr="0 9 * * *",
             prompt="report",
-            backend=AgentBackend.codex,
+            backend=backend,
             model="gpt-example",
             thinking_level="high",
             enabled=True,
@@ -425,8 +429,13 @@ async def test_cron_fire_creates_structured_task(db_engine, monkeypatch):
         loaded = await db.get(CronJob, enabled_id)
         assert loaded.last_status == "triggered"
         task = await db.get(Task, first_task_id)
+        expected_mode = RuntimeMode.interactive if terminal_enabled else RuntimeMode.structured
+        assert task.runtime_mode == expected_mode
+        assert task.backend == backend
         assert task.model == "gpt-example"
         assert task.thinking_level == "high"
         paused_job = await db.get(CronJob, disabled_id)
         assert paused_job.enabled is False
-        assert (await db.get(Task, paused_task_id)).cron_job_id == disabled_id
+        paused_task = await db.get(Task, paused_task_id)
+        assert paused_task.cron_job_id == disabled_id
+        assert paused_task.runtime_mode == expected_mode
