@@ -274,6 +274,7 @@ export const api = {
 
   cronJobs: (projectId: string) =>
     request<ListResponse<CronJob>>(`/api/projects/${projectId}/cron-jobs`),
+  allCronJobs: () => request<ListResponse<CronJob>>("/api/cron-jobs"),
   createCron: (
     projectId: string,
     body: {

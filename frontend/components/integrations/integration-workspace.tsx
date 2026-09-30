@@ -39,7 +39,9 @@ export function IntegrationWorkspace() {
     return () => window.cancelAnimationFrame(frame);
   }, []);
   const selectedProject = projects.data?.items.find((project) => project.id === projectId);
-  const jobs = useQuery({ queryKey: ["cron", projectId], queryFn: () => api.cronJobs(projectId), enabled: !!projectId });
+  const jobs = useQuery({ queryKey: ["cron-all"], queryFn: api.allCronJobs });
+  const [filterProjectId, setFilterProjectId] = useState("");
+  const visibleJobs = (jobs.data?.items ?? []).filter((job) => !filterProjectId || job.project_id === filterProjectId);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -63,6 +65,7 @@ export function IntegrationWorkspace() {
   }
 
   function edit(job: CronJob) {
+    setProjectId(job.project_id);
     setEditingId(job.id); setName(job.name); setPrompt(job.prompt); setBackend(job.backend);
     setModel(job.model ?? ""); setThinking(job.thinking_level);
     if (job.interval_minutes) {
@@ -87,18 +90,18 @@ export function IntegrationWorkspace() {
     },
     onSuccess: () => {
       resetEditor();
-      queryClient.invalidateQueries({ queryKey: ["cron", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["cron-all"] });
     },
     onError: (cause: Error) => setError(cause.message),
   });
   const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.toggleCron(projectId, id, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cron", projectId] }),
+    mutationFn: ({ projectId: jobProjectId, id, enabled }: { projectId: string; id: string; enabled: boolean }) => api.toggleCron(jobProjectId, id, enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cron-all"] }),
     onError: (cause: Error) => setError(cause.message),
   });
   const run = useMutation({
-    mutationFn: (id: string) => api.runCronNow(projectId, id),
-    onSuccess: ({ task_id }) => { setError(""); setLastTaskId(task_id); queryClient.invalidateQueries({ queryKey: ["cron", projectId] }); },
+    mutationFn: ({ projectId: jobProjectId, id }: { projectId: string; id: string }) => api.runCronNow(jobProjectId, id),
+    onSuccess: ({ task_id }) => { setError(""); setLastTaskId(task_id); queryClient.invalidateQueries({ queryKey: ["cron-all"] }); },
     onError: (cause: Error) => setError(cause.message),
   });
 
@@ -142,8 +145,17 @@ export function IntegrationWorkspace() {
     {lastTaskId && <Link href={`/tasks/${lastTaskId}`} className="inline-flex items-center gap-2 text-sm text-signal-300">Open new agent session <ArrowUpRight className="h-4 w-4" /></Link>}
 
     <section className="space-y-4">
-      <div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-signal-400" /><h2 className="text-lg font-medium text-white">Scheduled for this project</h2></div>
-      {!projectId ? <p className="text-sm text-slate-500">Choose a project to see its recurring agents.</p> : jobs.isPending ? <p className="text-sm text-slate-500">Loading agents…</p> : jobs.isError ? <p className="text-sm text-red-300">{jobs.error.message}</p> : !jobs.data.items.length ? <p className="text-sm text-slate-500">No recurring agents yet.</p> : <div className="space-y-3">{jobs.data.items.map((job) => <article key={job.id} className="surface rounded-xl p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-white">{job.name}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{frequency(job)} · {backendLabel(job.backend)} · {job.model || "Runtime default"} · {job.thinking_level} thinking</p><p className="text-xs text-slate-600">Last run {formatDateTime(job.last_run_at)}</p></div><div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="ghost" onClick={() => edit(job)}><Pencil className="h-3.5 w-3.5" /> Edit</Button><Button size="sm" variant="ghost" disabled={!job.enabled} loading={run.isPending} onClick={() => run.mutate(job.id)}><Play className="h-3.5 w-3.5" /> Run now</Button><Button size="sm" variant="ghost" loading={toggle.isPending} onClick={() => toggle.mutate({ id: job.id, enabled: !job.enabled })}>{job.enabled ? "Pause" : "Resume"}</Button></div></div><p className="mt-3 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-slate-400">{job.prompt}</p></article>)}</div>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-signal-400" /><h2 className="text-lg font-medium text-white">Scheduled agents</h2></div>
+        <select aria-label="Filter scheduled agents by project" className="field w-full sm:w-48" value={filterProjectId} onChange={(event) => setFilterProjectId(event.target.value)}><option value="">All projects</option>{projects.data?.items.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
+      </div>
+      {jobs.isPending ? <p className="text-sm text-slate-500">Loading agents…</p> : jobs.isError ? <p className="text-sm text-red-300">{jobs.error.message}</p> : !jobs.data.items.length ? <p className="text-sm text-slate-500">No recurring agents yet.</p> : !visibleJobs.length ? <p className="text-sm text-slate-500">No recurring agents in this project.</p> : <div className="space-y-3">{visibleJobs.map((job) => <article key={job.id} className="surface rounded-xl p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold text-white">{job.name}</h3>{!job.enabled && <span className="rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-0.5 text-[0.65rem] text-amber-300">Paused</span>}</div><p className="mt-1 text-xs leading-5 text-slate-500">{projects.data?.items.find((project) => project.id === job.project_id)?.name || "Project"} · {frequency(job)} · {backendLabel(job.backend)} · {job.model || "Runtime default"} · {job.thinking_level} thinking</p><p className="text-xs text-slate-600">Last run {formatDateTime(job.last_run_at)}</p></div>
+          <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="ghost" onClick={() => edit(job)}><Pencil className="h-3.5 w-3.5" /> Edit</Button><Button size="sm" variant="ghost" loading={run.isPending} onClick={() => run.mutate({ projectId: job.project_id, id: job.id })}><Play className="h-3.5 w-3.5" /> Run now</Button><Button size="sm" variant="ghost" loading={toggle.isPending} onClick={() => toggle.mutate({ projectId: job.project_id, id: job.id, enabled: !job.enabled })}>{job.enabled ? "Pause" : "Resume"}</Button></div>
+        </div>
+        <p className="mt-3 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-slate-400">{job.prompt}</p>
+      </article>)}</div>}
     </section>
   </main>;
 }
