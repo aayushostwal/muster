@@ -246,7 +246,9 @@ The terminal endpoint is disabled unless
 `MUSTER_INTERACTIVE_TERMINAL_ENABLED=true`, accepts only loopback clients, and
 checks the browser `Origin` against `MUSTER_TERMINAL_ALLOWED_ORIGINS`. It is
 not a remotely exposed shell or a replacement for application authentication.
-Cron tasks always use `runtime_mode="structured"` and the JSON process manager.
+Cron tasks use `runtime_mode="interactive"` when the terminal runtime is enabled,
+launching the native CLI in the project's primary directory. When disabled,
+cron tasks use `runtime_mode="structured"` and the JSON process manager.
 Existing tasks are migrated as structured tasks.
 
 ## Process manager (`backend/app/services/process_manager.py`)

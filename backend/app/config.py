@@ -46,8 +46,8 @@ class Settings(BaseSettings):
     runtime_stream_limit_bytes: int = 8 * 1024 * 1024
 
     # Interactive PTY terminals are opt-in until the local-only security and
-    # lifecycle path has been validated on the host. Existing/cron tasks keep
-    # using the structured runner regardless of this default.
+    # lifecycle path has been validated on the host. Cron tasks use terminals
+    # when enabled; existing tasks retain their saved runtime mode.
     interactive_terminal_enabled: bool = False
     default_task_runtime_mode: Literal["structured", "interactive"] = "structured"
     terminal_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"

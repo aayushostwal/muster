@@ -103,7 +103,9 @@ Agent runtime safeguards are configurable with
 Native interactive task terminals are opt-in with
 `MUSTER_INTERACTIVE_TERMINAL_ENABLED=true`. Set
 `MUSTER_DEFAULT_TASK_RUNTIME_MODE=interactive` to make newly created manual
-tasks use the Codex/Claude TUI; cron tasks remain structured. The terminal
+tasks use the Codex/Claude TUI. With terminal support enabled, new cron runs
+also open the native CLI in the project's primary directory; otherwise they
+use structured output. Existing tasks retain their saved runtime mode. The terminal
 WebSocket is loopback-only and additionally checks
 `MUSTER_TERMINAL_ALLOWED_ORIGINS`. PTY logs are stored beneath
 `~/.muster/data/terminals` with owner-only permissions. Every fresh terminal
