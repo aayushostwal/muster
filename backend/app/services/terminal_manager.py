@@ -89,7 +89,7 @@ class TerminalManager:
                 return
             await self._spawn(task_id, prompt)
 
-    async def _spawn(self, task_id: uuid.UUID, prompt: str | None = None) -> None:
+    async def _spawn(self, task_id: uuid.UUID, prompt: str | None = None, *, resume_session: bool = False) -> None:
         async with SessionLocal() as db:
             task = await db.get(Task, task_id)
             if task is None or task.status in {TaskStatus.done, TaskStatus.cancelled}:
@@ -107,17 +107,24 @@ class TerminalManager:
                 return
             secrets = {secret.key_name: decrypt_secret(secret.encrypted_value) for secret in project.secrets}
             adapter = _ADAPTERS[task.backend]
-            native_session_id = (
+            resuming_native = resume_session and bool(task.session_id)
+            native_session_id = task.session_id if resuming_native else (
                 str(uuid.uuid4()) if task.backend == AgentBackend.claude_code else None
             )
-            command = adapter.build_interactive_command(
-                task,
-                project,
-                bindings,
-                secrets,
-                prompt=prompt or task.initial_prompt,
-                session_id=native_session_id,
-            )
+            if resuming_native:
+                command = adapter.resume_interactive_command(
+                    task, project, bindings, secrets,
+                    session_id=native_session_id, prompt=prompt or task.initial_prompt,
+                )
+            else:
+                command = adapter.build_interactive_command(
+                    task,
+                    project,
+                    bindings,
+                    secrets,
+                    prompt=prompt or task.initial_prompt,
+                    session_id=native_session_id,
+                )
             recurring = task.cron_job_id is not None
             if recurring:
                 hook = [sys.executable, str(Path(__file__).with_name("recurring_terminal_hook.py"))]
@@ -223,7 +230,7 @@ class TerminalManager:
                 running.completion_task = asyncio.create_task(
                     self._close_after_recurring_turn(running, completion_file)
                 )
-            if codex_home is not None:
+            if codex_home is not None and not resuming_native:
                 running.session_capture_task = asyncio.create_task(
                     self._capture_codex_session_id(
                         running,
@@ -479,7 +486,7 @@ class TerminalManager:
                 await running.session.wait()
                 running = self._running.get(task_id)
             if running is not None and running.session is not None and prompt:
-                await running.session.write(prompt.encode("utf-8") + b"\r")
+                await running.session.write(b"\x1b[200~" + prompt.encode("utf-8") + b"\x1b[201~\r")
                 return
             if running is None:
                 from app.services.process_manager import ProcessManager
@@ -488,7 +495,7 @@ class TerminalManager:
                     task = await db.get(Task, task_id)
                     if task is None:
                         return
-                    if prompt:
+                    if prompt and not task.session_id:
                         prompt = await ProcessManager._runtime_handoff_prompt_db(
                             db, task, task.backend, task.backend
                         )
@@ -496,7 +503,7 @@ class TerminalManager:
                     task.attention_reason = None
                     task.completed_at = None
                     await db.commit()
-                await self._spawn(task_id, prompt)
+                await self._spawn(task_id, prompt, resume_session=True)
 
     async def cancel(self, task_id: uuid.UUID) -> None:
         await self._finish(task_id, TaskStatus.cancelled)

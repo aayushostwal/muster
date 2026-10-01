@@ -182,6 +182,15 @@ class CodexAdapter:
         cmd += ["--", rendered_prompt]
         return BackendCommand(argv=cmd)
 
+    def resume_interactive_command(
+        self, task: Task, project: Project, bindings: AdapterBindings,
+        secrets: dict[str, str], session_id: str, prompt: str,
+    ) -> BackendCommand:
+        command = self.build_interactive_command(task, project, bindings, secrets, prompt)
+        index = command.argv.index("--")
+        command.argv[index:index] = ["resume", session_id]
+        return command
+
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()
         if not raw:

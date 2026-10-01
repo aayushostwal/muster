@@ -116,6 +116,12 @@ Enabled agent and skill instructions are injected lazily: a turn must invoke
 `/resource-name`; unrelated global instruction bodies are not copied into every
 prompt.
 
+Send follow-ups through the composer beneath the task terminal, including
+when its output is archived. A follow-up reopens the saved native Claude or
+Codex conversation and retains its PR discussion. If no native session ID was
+captured, Muster starts a new terminal with the original brief and persisted
+messages. **Restart from beginning** still creates a new conversation.
+
 ## Running it
 
 Recurring agents support a daily run window in **Recurring agents → Edit**.
