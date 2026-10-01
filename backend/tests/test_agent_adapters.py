@@ -4,6 +4,10 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+import uuid
+from types import SimpleNamespace
+
+import pytest
 from pathlib import Path
 
 from app.services.agent_backends.base import (
@@ -592,3 +596,50 @@ def test_codex_replaces_live_legacy_temp_symlink(monkeypatch, tmp_path):
             "SELECT rollout_path FROM threads WHERE id = 'thread-456'"
         ).fetchone()
     assert repaired == (str(rollout.resolve()),)
+
+
+@pytest.mark.parametrize("recurring", [False, True])
+@pytest.mark.parametrize("invocation", ["first", "resume", "interactive"])
+def test_recurring_permissions_apply_to_every_cli_invocation(recurring, invocation):
+    task = SimpleNamespace(initial_prompt="Check Slack", model=None, fallback_models=[], thinking_level=None,
+                           cron_job_id=uuid.uuid4() if recurring else None)
+    project = SimpleNamespace(default_model=None)
+    bindings = AdapterBindings(primary_directory="/tmp/project", directories=["/tmp/project"],
+        mcp_servers={"jira": {"command": "jira-mcp"}},
+        native_claude_mcp_names=("claude.ai Slack",),
+        tool_rules=[{"decision": "allow", "backend": "claude_code", "claude_pattern": "Bash(git status *)"},
+                    {"decision": "deny", "backend": "claude_code", "claude_pattern": "mcp__jira__delete_issue"}],
+        agent_profiles={}, skills={})
+    commands = []
+    for adapter in (ClaudeCodeAdapter(), CodexAdapter()):
+        if invocation == "resume":
+            command = adapter.resume_command(task, project, bindings, {}, "session", "Check Slack")
+        elif invocation == "interactive":
+            command = adapter.build_interactive_command(task, project, bindings, {})
+        else:
+            command = adapter.build_command(task, project, bindings, {})
+        commands.append(command.argv)
+    claude, codex = commands
+    assert claude[claude.index("--permission-mode") + 1] == ("auto" if recurring else "acceptEdits")
+    allowed = claude[claude.index("--allowedTools") + 1].split(",")
+    assert "Bash(git status *)" in allowed
+    assert ("mcp__jira__*" in allowed) is recurring
+    assert ("mcp__claude_ai_Slack__*" in allowed) is recurring
+    assert "mcp__*" not in allowed
+    assert "mcp__jira__delete_issue" in claude[claude.index("--disallowedTools") + 1]
+    if recurring or invocation != "interactive":
+        assert claude[claude.index("--permission-prompts") + 1] == "none"
+    else:
+        assert "--permission-prompts" not in claude
+    if invocation == "interactive":
+        assert codex[codex.index("--ask-for-approval") + 1] == ("never" if recurring else "on-request")
+    else:
+        assert f'approval_policy="{"never" if recurring else "on-request"}"' in codex
+    if invocation != "resume":
+        assert codex[codex.index("--sandbox") + 1] == "workspace-write"
+    # Generated Claude config must not duplicate native OAuth-managed servers.
+    config_path = Path(claude[claude.index("--mcp-config") + 1])
+    try:
+        assert set(json.loads(config_path.read_text())["mcpServers"]) == {"jira"}
+    finally:
+        config_path.unlink()

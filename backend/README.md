@@ -127,6 +127,18 @@ use the configured timezone; the window also filters their scheduled runs.
 **Run now** bypasses the window and works for paused jobs. A run already in
 progress at closing time is allowed to finish.
 
+Recurring runs start unattended: Claude uses `--permission-mode auto` and
+server-specific MCP allow rules (including imported native Claude connectors),
+while Codex uses approval policy `never` within its workspace sandbox. These
+settings also apply to **Run now** and resumed recurring tasks. Explicit deny
+rules remain enforced. A denied tool ends a structured recurring run as failed
+instead of leaving a pending approval. Connector authentication must already
+be configured; auto mode does not sign in to Slack or Jira. Claude auto mode
+requires a supported model (Sonnet 4.6+ or Opus 4.6+ on the Anthropic API;
+Haiku is unsupported) and must be enabled by account/organization policy.
+Claude `--permission-prompts none` requires CLI v2.1.259 or later. Existing
+running terminals must be restarted to receive the new launch settings.
+
 Recurring terminals close when their native CLI turn finishes. The final
 summary and terminal output remain available for review; manual task terminals
 are unaffected. Source tasks created through the Muster MCP tool must include

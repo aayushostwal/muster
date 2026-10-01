@@ -223,6 +223,8 @@ async def test_cron_launches_claude_terminal_in_project_primary_directory(
     assert "source_key" in session.argv[-1]
     assert "-p" not in session.argv
     assert "--session-id" in session.argv
+    assert session.argv[session.argv.index("--permission-mode") + 1] == "auto"
+    assert session.argv[session.argv.index("--permission-prompts") + 1] == "none"
     async with session_local() as db:
         task = await db.get(Task, task_id)
         assert task.runtime_mode == RuntimeMode.interactive

@@ -107,7 +107,8 @@ class CodexAdapter:
         )
         if model:
             cmd += ["--model", model]
-        cmd += ["--sandbox", "workspace-write", "-c", 'approval_policy="on-request"']
+        policy = "never" if getattr(task, "cron_job_id", None) is not None else "on-request"
+        cmd += ["--sandbox", "workspace-write", "-c", f'approval_policy="{policy}"']
         if bindings.primary_directory:
             cmd += ["--cd", bindings.primary_directory]
         for directory in bindings.directories:
@@ -144,7 +145,8 @@ class CodexAdapter:
             cmd += ["--model", model]
         # `exec resume` restores the original sandbox and writable roots and
         # does not accept `--cd`, `--add-dir`, or `--sandbox` again.
-        cmd += ["-c", 'approval_policy="on-request"']
+        policy = "never" if getattr(task, "cron_job_id", None) is not None else "on-request"
+        cmd += ["-c", f'approval_policy="{policy}"']
         cmd += self._capability_flags(task, bindings)
         return BackendCommand(argv=cmd, stdin_payload=rendered_prompt)
 
@@ -166,7 +168,8 @@ class CodexAdapter:
         )
         if model:
             cmd += ["--model", model]
-        cmd += ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]
+        policy = "never" if getattr(task, "cron_job_id", None) is not None else "on-request"
+        cmd += ["--sandbox", "workspace-write", "--ask-for-approval", policy]
         if bindings.primary_directory:
             cmd += ["--cd", bindings.primary_directory]
         for directory in bindings.directories:
