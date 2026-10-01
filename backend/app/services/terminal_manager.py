@@ -654,6 +654,11 @@ class TerminalManager:
                     client.queue.get_nowait()
                 client.queue.put_nowait(event)
         self._running.pop(running.task_id, None)
+        from app.services.recurring_memory import refresh_after_status
+        async with SessionLocal() as db:
+            task = await db.get(Task, running.task_id)
+            if task is not None:
+                await refresh_after_status(db, task)
         await broadcast(
             running.task_id,
             {"type": "status", "status": status.value, "attention_reason": attention_reason},

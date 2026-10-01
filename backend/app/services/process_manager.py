@@ -927,6 +927,12 @@ class ProcessManager:
         if primary_directory:
             directory_paths = [primary_directory, *[path for path in directory_paths if path != primary_directory]]
 
+        memory_directory = None
+        if task.cron_job_id is not None:
+            from app.services.recurring_memory import refresh
+            memory_directory = str(await refresh(db, task.cron_job_id))
+            directory_paths.append(memory_directory)
+
         return AdapterBindings(
             primary_directory=primary_directory,
             directories=directory_paths,
@@ -936,6 +942,7 @@ class ProcessManager:
             skills=skills,
             selected_agent_prompt=selected.system_prompt if selected else None,
             approval_ids=tuple(approval.id for approval in one_time_approvals),
+            recurring_memory_directory=memory_directory,
             native_claude_mcp_names=tuple(
                 row.name for row in global_mcp
                 if row.id in native_claude_mcp_ids and row.enabled
@@ -1514,6 +1521,11 @@ class ProcessManager:
                 task.completed_at = datetime.now(timezone.utc)
             await db.commit()
         await broadcast(task_id, {"type": "status", "status": status.value, "attention_reason": attention_reason})
+        from app.services.recurring_memory import refresh_after_status
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if task is not None:
+                await refresh_after_status(db, task)
 
     async def _append_transcript(self, task_id: uuid.UUID, sender: str, text: str) -> None:
         settings.ensure_dirs()

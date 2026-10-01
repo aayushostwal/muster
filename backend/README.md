@@ -139,6 +139,22 @@ Haiku is unsupported) and must be enabled by account/organization policy.
 Claude `--permission-prompts none` requires CLI v2.1.259 or later. Existing
 running terminals must be restarted to receive the new launch settings.
 
+Each recurring agent keeps memory under
+`~/.muster/data/recurring-agents/<agent-id>/` (or your configured data directory).
+Muster refreshes `MEMORY.md` from the latest five run statuses and bounded agent
+reports at launch and completion. The agent reads it alongside `NOTES.md`, which
+it updates with verified mappings, processed message IDs, cursors, decisions and
+open items. Notes survive new sessions, job edits and backend changes; each job
+has its own directory. Memory is created on first invocation, including existing
+jobs. Archived memory is retained when a job is deleted. Database source keys
+and event receipts remain the authority for duplicate prevention. Reports are
+unverified context, and agents are instructed to keep secrets and raw Slack
+conversations out of their notes. The memory directory has owner-only access.
+
+Recurring Claude runs also pre-approve literal MCP namespaces discovered from
+installed user plugins, including `mcp__plugin_slack_slack__*`; project/local
+plugin disable settings and explicit deny rules remain effective.
+
 Recurring terminals close when their native CLI turn finishes. The final
 summary and terminal output remain available for review; manual task terminals
 are unaffected. Source tasks created through the Muster MCP tool must include

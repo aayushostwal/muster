@@ -57,6 +57,9 @@ class CodexAdapter:
                 f"include its instructions in the delegated task:\n{agents}"
             )
         sections.append(pull_request_guidance(bindings))
+        if bindings.recurring_memory_directory and getattr(task, "cron_job_id", None) is not None:
+            from app.services.recurring_memory import guidance
+            sections.append(guidance(task.cron_job_id))
         sections.append(prompt)
         return "\n\n---\n\n".join(sections)
 
