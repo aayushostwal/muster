@@ -156,6 +156,14 @@ async def test_recurring_agent_requires_working_directory_and_accepts_interval(o
         assert created.json()["model"] == "gpt-example"
         assert created.json()["thinking_level"] == "high"
         job_id = created.json()["id"]
+        window = {"window_start": "11:00", "window_end": "21:00", "timezone": "Asia/Kolkata"}
+        saved_window = await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json=window)
+        assert saved_window.status_code == 200
+        assert all(saved_window.json()[field] == value for field, value in window.items())
+        for invalid in ({"timezone": "Invalid/Zone"}, {"timezone": None}, {"window_end": None}, {"window_start": "25:00"}):
+            assert (await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json=invalid)).status_code == 422
+        cleared = await client.patch(f"/api/projects/{project_id}/cron-jobs/{job_id}", json={"window_start": None, "window_end": None})
+        assert cleared.status_code == 200 and cleared.json()["window_start"] is None
         updated = await client.patch(
             f"/api/projects/{project_id}/cron-jobs/{job_id}",
             json={"prompt": "Review Jira and Slack", "interval_minutes": 120, "model": None, "thinking_level": "low"},

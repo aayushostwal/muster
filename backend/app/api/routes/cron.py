@@ -9,12 +9,13 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CronJob, Project
 from app.db.session import get_db
-from app.schemas.cron import CronJobCreate, CronJobRead, CronJobUpdate
+from app.schemas.cron import CronJobCreate, CronJobRead, CronJobUpdate, RunWindow
 from app.services.cron_scheduler import _fire_cron_job, sync_jobs_from_db
 from app.services.cron_scheduler import is_valid_cron
 
@@ -79,6 +80,14 @@ async def update_cron_job(
     db: AsyncSession = Depends(get_db),
 ):
     cron_job = await _get_cron_job_or_404(db, project_id, cron_id)
+    changes = body.model_dump(exclude_unset=True)
+    try:
+        RunWindow.model_validate({
+            field: changes.get(field, getattr(cron_job, field))
+            for field in ("timezone", "window_start", "window_end")
+        })
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if body.schedule_expr is not None and not is_valid_cron(body.schedule_expr):
         raise HTTPException(status_code=422, detail="Enter a valid schedule")
     if body.prompt is not None and not body.prompt.strip():

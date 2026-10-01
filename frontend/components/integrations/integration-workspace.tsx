@@ -51,6 +51,10 @@ export function IntegrationWorkspace() {
   const [amount, setAmount] = useState(1);
   const [unit, setUnit] = useState<Unit>("hours");
   const [legacySchedule, setLegacySchedule] = useState<string | null>(null);
+  const [windowEnabled, setWindowEnabled] = useState(false);
+  const [windowStart, setWindowStart] = useState("11:00");
+  const [windowEnd, setWindowEnd] = useState("21:00");
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [error, setError] = useState("");
   const [lastTaskId, setLastTaskId] = useState("");
   const catalog = useQuery({ queryKey: ["models", backend], queryFn: () => api.models(backend), staleTime: 60 * 60 * 1000 });
@@ -62,12 +66,15 @@ export function IntegrationWorkspace() {
   function resetEditor() {
     setEditingId(null); setName(""); setPrompt(""); setModel(""); setThinking("medium");
     setAmount(1); setUnit("hours"); setLegacySchedule(null); setError("");
+    setWindowEnabled(false); setWindowStart("11:00"); setWindowEnd("21:00"); setTimezone("Asia/Kolkata");
   }
 
   function edit(job: CronJob) {
     setProjectId(job.project_id);
     setEditingId(job.id); setName(job.name); setPrompt(job.prompt); setBackend(job.backend);
     setModel(job.model ?? ""); setThinking(job.thinking_level);
+    setWindowEnabled(!!job.window_start); setWindowStart(job.window_start ?? "11:00");
+    setWindowEnd(job.window_end ?? "21:00"); setTimezone(job.timezone ?? "Asia/Kolkata");
     if (job.interval_minutes) {
       const interval = intervalParts(job.interval_minutes);
       setAmount(interval.amount); setUnit(interval.unit); setLegacySchedule(null);
@@ -80,7 +87,8 @@ export function IntegrationWorkspace() {
 
   const save = useMutation({
     mutationFn: () => {
-      const values = { name: name.trim(), prompt: prompt.trim(), backend, model: model || null, thinking_level: thinking };
+      const values = { name: name.trim(), prompt: prompt.trim(), backend, model: model || null, thinking_level: thinking,
+        timezone: timezone.trim(), window_start: windowEnabled ? windowStart : null, window_end: windowEnabled ? windowEnd : null };
       if (editingId) return api.updateCron(projectId, editingId, {
         ...values, ...(legacySchedule ? {} : { interval_minutes: amount * units[unit] }),
       });
@@ -111,6 +119,10 @@ export function IntegrationWorkspace() {
       setError("Choose a project, add a name and prompt, and set a frequency of up to one year.");
       return;
     }
+    if (windowEnabled && (!windowStart || !windowEnd || windowStart === windowEnd)) {
+      setError("Choose different window start and end times.");
+      return;
+    }
     save.mutate();
   }
 
@@ -135,6 +147,15 @@ export function IntegrationWorkspace() {
         <label className="block min-w-0 text-xs font-medium text-slate-400"><span className="mb-2 block">Thinking level</span><select className={`field ${fieldHeight}`} value={thinking} onChange={(event) => setThinking(event.target.value as CronJob["thinking_level"])}>{thinkingLevels.map((level) => <option key={level} value={level}>{level[0].toUpperCase() + level.slice(1)}</option>)}</select></label>
         <div className="min-w-0 text-xs font-medium text-slate-400"><span className="mb-2 block">Run every</span>{legacySchedule ? <div className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-white/10 px-3.5"><span className="truncate text-sm text-slate-300">Current: {legacySchedule}</span><button type="button" className="shrink-0 text-signal-300" onClick={() => setLegacySchedule(null)}>Use interval</button></div> : <div className="grid grid-cols-[minmax(0,1fr)_minmax(7rem,9rem)] gap-2"><input aria-label="Frequency" className={`field min-w-0 ${fieldHeight}`} type="number" min={1} max={Math.floor(525600 / units[unit])} value={amount} onChange={(event) => setAmount(Number(event.target.value))} required /><select aria-label="Frequency unit" className={`field min-w-0 ${fieldHeight}`} value={unit} onChange={(event) => setUnit(event.target.value as Unit)}><option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option></select></div>}</div>
       </div>
+      <div className="space-y-4 border-t border-white/[0.07] px-5 py-5 md:px-7">
+        <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={windowEnabled} onChange={(event) => setWindowEnabled(event.target.checked)} />Limit to a daily run window</label>
+        <div className="grid gap-4 sm:grid-cols-3">
+          {windowEnabled && <><label className="text-xs text-slate-400">Window start<input type="time" className={`field mt-2 ${fieldHeight}`} value={windowStart} onChange={(event) => setWindowStart(event.target.value)} required /></label><label className="text-xs text-slate-400">Window end<input type="time" className={`field mt-2 ${fieldHeight}`} value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} required /></label></>}
+          <label className="text-xs text-slate-400">Timezone<input className={`field mt-2 ${fieldHeight}`} value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Asia/Kolkata" required /></label>
+        </div>
+        {windowEnabled && <p className="text-xs leading-5 text-slate-500">Intervals restart at the window opening each day. No scheduled runs start at or after the closing time. Overnight windows are supported. Run now bypasses the window.</p>}
+        <p className="text-xs leading-5 text-slate-500">The terminal closes after the recurring turn finishes. Its output stays available for review.</p>
+      </div>
       <div className="flex flex-col gap-4 border-t border-white/[0.07] px-5 py-4 sm:flex-row sm:items-center sm:justify-between md:px-7">
         <span className="text-xs leading-5 text-slate-500">{selectedProject ? selectedProject.primary_directory_id ? `Runs in ${selectedProject.name}` : "This project needs a primary directory before scheduling." : "Choose a project to use its capabilities."}</span>
         <div className="flex items-center gap-2 self-end sm:self-auto">{editingId && <Button type="button" variant="ghost" onClick={resetEditor}>Cancel</Button>}<Button type="submit" loading={save.isPending} disabled={!selectedProject?.primary_directory_id}>{editingId ? <Pencil className="h-4 w-4" /> : <Plus className="h-4 w-4" />}{editingId ? "Save changes" : "Create recurring agent"}</Button></div>
@@ -154,6 +175,7 @@ export function IntegrationWorkspace() {
           <div className="min-w-0"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold text-white">{job.name}</h3>{!job.enabled && <span className="rounded-md border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-0.5 text-[0.65rem] text-amber-300">Paused</span>}</div><p className="mt-1 text-xs leading-5 text-slate-500">{projects.data?.items.find((project) => project.id === job.project_id)?.name || "Project"} · {frequency(job)} · {backendLabel(job.backend)} · {job.model || "Runtime default"} · {job.thinking_level} thinking</p><p className="text-xs text-slate-600">Last run {formatDateTime(job.last_run_at)}</p></div>
           <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="ghost" onClick={() => edit(job)}><Pencil className="h-3.5 w-3.5" /> Edit</Button><Button size="sm" variant="ghost" loading={run.isPending} onClick={() => run.mutate({ projectId: job.project_id, id: job.id })}><Play className="h-3.5 w-3.5" /> Run now</Button><Button size="sm" variant="ghost" loading={toggle.isPending} onClick={() => toggle.mutate({ projectId: job.project_id, id: job.id, enabled: !job.enabled })}>{job.enabled ? "Pause" : "Resume"}</Button></div>
         </div>
+        {job.window_start && <p className="mt-2 text-xs text-slate-400">Daily window {job.window_start}–{job.window_end} · {job.timezone}</p>}
         <p className="mt-3 line-clamp-3 whitespace-pre-wrap text-xs leading-5 text-slate-400">{job.prompt}</p>
       </article>)}</div>}
     </section>

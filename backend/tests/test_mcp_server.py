@@ -121,6 +121,10 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
                 "runtime_mode": "interactive",
                 "model": "sonnet",
                 "tags": ["integration"],
+                "source_key": "jira:10001",
+                "related_source_key": "slack:C1:100",
+                "source_event_key": "slack:C1:101",
+                "source_update": "Check SSO",
             },
         )
 
@@ -135,7 +139,23 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
         "backend": "claude_code",
         "runtime_mode": "interactive",
         "model": "sonnet",
+        "source_key": "jira:10001",
+        "related_source_key": "slack:C1:100",
+        "source_event_key": "slack:C1:101",
+        "source_update": "Check SSO",
     }
+
+
+@pytest.mark.asyncio
+async def test_recurring_mcp_create_requires_source_key(monkeypatch):
+    monkeypatch.setenv("MUSTER_RECURRING_RUN", "1")
+    api = MusterApiClient(base_url="http://muster.test", transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"items": [_project()]})
+    ))
+    async with Client(build_server(api), raise_exceptions=False) as client:
+        result = await client.call_tool("create_task", {"project": "Muster", "title": "Intake", "prompt": "work"})
+        assert result.is_error
+        assert "source_key" in str(result.content)
 
 
 @pytest.mark.asyncio

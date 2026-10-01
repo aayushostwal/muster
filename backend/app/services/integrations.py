@@ -15,11 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decrypt_secret
 from app.db.models import (
     IntegrationEvent, IntegrationRun, IntegrationSettings, JiraIssueLink,
-    JiraProjectMapping, Message, MessageSender, PrDeliveryRun,
+    JiraProjectMapping, Message, MessageSender, PrDeliveryRun, TaskSourceEvent,
     PrDeliveryStatus, Project, RuntimeMode, Task, TaskStatus,
 )
 from app.db.session import SessionLocal, engine
 from app.services.process_manager import process_manager
+from app.services import task_sources
 
 logger = logging.getLogger(__name__)
 _local_lock = asyncio.Lock()
@@ -222,18 +223,23 @@ async def _ensure_issue_task(db: AsyncSession, jira: JiraClient, issue: dict) ->
         "Make focused changes in the project repository. Do not push directly; Muster will use "
         "the project's PR delivery workflow after your turn finishes."
     )
-    task = Task(project_id=project.id, title=f"[{key}] {fields.get('summary', key)}"[:300], initial_prompt=prompt,
-                backend=project.default_backend, model=project.default_model,
-                runtime_mode=RuntimeMode.structured, status=TaskStatus.queued)
-    db.add(task)
-    await db.flush()
+    task = await task_sources.find_task(db, project.id, f"jira:{issue_id}")
+    created = task is None
+    if created:
+        task = Task(project_id=project.id, source_key=f"jira:{issue_id}", title=f"[{key}] {fields.get('summary', key)}"[:300], initial_prompt=prompt,
+                    backend=project.default_backend, model=project.default_model,
+                    runtime_mode=RuntimeMode.structured, status=TaskStatus.queued)
+        db.add(task)
+        await db.flush()
+    await task_sources.bind_source(db, task, f"jira:{issue_id}")
+    await task_sources.bind_source(db, task, f"jira:{key}")
     link = JiraIssueLink(issue_id=issue_id, issue_key=key, task_id=task.id)
     db.add(link)
-    db.add(IntegrationEvent(source="jira_task_start", external_id=issue_id, status="pending"))
-    for comment in comments:
+    db.add(IntegrationEvent(source="jira_task_start", external_id=issue_id, status="pending" if created else "processed"))
+    for comment in comments if created else []:
         db.add(IntegrationEvent(source="jira_comment_in", external_id=str(comment["id"]), status="processed"))
     await db.commit()
-    return link, True
+    return link, created
 
 
 async def _start_task_if_pending(db: AsyncSession, link: JiraIssueLink) -> None:
@@ -340,6 +346,17 @@ async def _sync_jira(db: AsyncSession, settings: IntegrationSettings, jira: Jira
     await db.commit()
 
 
+async def _append_slack_update(db: AsyncSession, link: JiraIssueLink, thread_key: str, event_key: str, content: str) -> None:
+    task = await db.get(Task, link.task_id)
+    if task is None:
+        return
+    async with task_sources.lock_for(task.project_id):
+        await task_sources.bind_source(db, task, f"slack:{thread_key}")
+        event = await task_sources.record_update(db, task, f"slack:{event_key}", content)
+        await db.commit()
+        await task_sources.dispatch_update(db, event)
+
+
 async def _sync_slack(db: AsyncSession, settings: IntegrationSettings, slack: SlackClient, jira: JiraClient, until: datetime) -> None:
     if not settings.slack_jira_project_key:
         raise RemoteError("Choose a Jira project for Slack-created tickets")
@@ -364,6 +381,19 @@ async def _sync_slack(db: AsyncSession, settings: IntegrationSettings, slack: Sl
         thread = await slack.thread(channel, root_ts)
         transcript = "\n".join(f"{m.get('user', 'unknown')}: {m.get('text', '')}" for m in thread)
         permalink = item.get("permalink") or f"https://slack.com/app_redirect?channel={quote(channel)}&message_ts={quote(root_ts)}"
+        references = set(re.findall(r"\b[A-Z][A-Z0-9_]*-\d+\b", transcript))
+        if len(references) == 1:
+            full_issue = await jira.issue(next(iter(references)))
+            link, created = await _ensure_issue_task(db, jira, full_issue)
+            if link:
+                await _record(db, "slack_thread", external_id, "processed", link.issue_key)
+                await _start_task_if_pending(db, link)
+                root = next((message for message in thread if message.get("ts") == root_ts), item)
+                await _append_slack_update(db, link, external_id, external_id, f"Slack thread {permalink}:\n{root.get('text', '')[:_MAX_TEXT]}")
+            continue
+        if len(references) > 1:
+            await _record(db, "slack_thread", external_id, "needs_review", f"Multiple Jira references: {permalink}\n\n{transcript}"[:_MAX_TEXT])
+            continue
         if not _looks_actionable(item.get("text", "")):
             await _record(db, "slack_thread", external_id, "needs_review", f"Slack thread: {permalink}\n\n{transcript}"[:_MAX_TEXT])
             continue
@@ -391,6 +421,18 @@ async def _sync_slack(db: AsyncSession, settings: IntegrationSettings, slack: Sl
         if not event.detail or not re.fullmatch(r"[A-Z][A-Z0-9_]*-\d+", event.detail):
             continue
         channel, root_ts = event.external_id.split(":", 1)
+        link = (await db.execute(select(JiraIssueLink).where(JiraIssueLink.issue_key == event.detail))).scalar_one_or_none()
+        linked_task = await db.get(Task, link.task_id) if link else None
+        if linked_task:
+            # Persisted delivery retries must survive the polling cursor and
+            # include the root message as well as replies.
+            async with task_sources.lock_for(linked_task.project_id):
+                pending_updates = (await db.execute(select(TaskSourceEvent).where(
+                    TaskSourceEvent.task_id == link.task_id,
+                    TaskSourceEvent.status == "pending",
+                ))).scalars().all()
+                for pending_update in pending_updates:
+                    await task_sources.dispatch_update(db, pending_update)
         for message in await slack.thread(channel, root_ts):
             ts = message.get("ts")
             if not ts or float(ts) <= since.timestamp() or float(ts) > until.timestamp():
@@ -398,7 +440,18 @@ async def _sync_slack(db: AsyncSession, settings: IntegrationSettings, slack: Sl
             if message.get("user") == slack.user_id or ts == root_ts:
                 continue
             reply_id = f"{channel}:{ts}"
-            if await _event(db, "slack_reply_out", reply_id):
+            previous_reply = await _event(db, "slack_reply_out", reply_id)
+            if previous_reply:
+                # Retry task delivery after a failed resume without duplicating
+                # a posted Jira comment or appending another conversation message.
+                if link:
+                    pending = (await db.execute(select(TaskSourceEvent).where(
+                        TaskSourceEvent.task_id == link.task_id,
+                        TaskSourceEvent.event_key == f"slack:{reply_id}",
+                        TaskSourceEvent.status == "pending",
+                    ))).scalar_one_or_none()
+                    if pending:
+                        await task_sources.dispatch_update(db, pending)
                 continue
             content = message.get("text", "").strip()
             if not content:
@@ -409,6 +462,8 @@ async def _sync_slack(db: AsyncSession, settings: IntegrationSettings, slack: Sl
             reply = await _event(db, "slack_reply_out", reply_id)
             reply.status = "processed"
             await db.commit()
+            if link:
+                await _append_slack_update(db, link, event.external_id, reply_id, f"Slack reply by {message.get('user', 'unknown')}:\n{content[:_MAX_TEXT]}")
     settings.slack_cursor = until
     await db.commit()
 

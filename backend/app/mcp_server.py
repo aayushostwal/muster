@@ -117,6 +117,7 @@ def _task_summary(task: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "id",
         "project_id",
+        "source_key",
         "title",
         "status",
         "attention_reason",
@@ -171,15 +172,40 @@ def build_server(api: MusterApiClient | None = None) -> MCPServer:
         runtime_mode: RuntimeMode | None = None,
         model: str | None = None,
         tags: list[str] | None = None,
+        source_key: Annotated[str | None, Field(min_length=1, max_length=300)] = None,
+        related_source_key: Annotated[str | None, Field(min_length=1, max_length=300)] = None,
+        related_task_id: str | None = None,
+        source_event_key: Annotated[str | None, Field(min_length=1, max_length=300)] = None,
+        source_update: Annotated[str | None, Field(min_length=1, max_length=12000)] = None,
     ) -> dict[str, Any]:
         """Create and immediately dispatch a task in a project.
 
         ``project`` accepts an exact project name or UUID. The project supplies
         the working directory, skills, MCP connectors, and tool policy. Omit
         backend/runtime/model to use the project's configured defaults.
+        For recurring intake, always supply a stable source_key such as
+        jira:<issue-id> or slack:<channel-id>:<thread-ts>. Reusing that key in
+        the same project returns the existing task without dispatching it,
+        regardless of status. Never resume/restart that task just because it
+        appeared in another polling iteration.
+        To deliver NEW Slack replies, include source_event_key (channel + message
+        timestamp, including edit revision if edited) and source_update (reply
+        text). Each event is appended once and continues the existing task.
+        To attach a Slack thread to an existing Jira task, set related_source_key
+        to its jira:<issue-id> or jira:<issue-key>; source_key remains the Slack
+        channel + ROOT thread timestamp. The alias is saved for future runs.
+        A missing related task or conflicting mapping errors; never create a
+        fallback task in response. Replay identical event keys to retry failed
+        dispatch; omit source_update for already-seen content.
+        Legacy tasks without source keys can be linked with related_task_id.
+        Supply related_source_key too to register their Jira identity. Only do
+        this after verifying the exact issue reference in the task's brief;
+        never guess from a similar title. Both targets must be in this project.
         """
 
         selected = await client.resolve_project(project)
+        if os.environ.get("MUSTER_RECURRING_RUN") == "1" and not source_key:
+            raise ToolError("Recurring runs must supply a stable source_key when creating tasks")
         body: dict[str, Any] = {
             "title": title.strip(),
             "initial_prompt": prompt.strip(),
@@ -191,6 +217,11 @@ def build_server(api: MusterApiClient | None = None) -> MCPServer:
             raise ToolError("Task prompt must not be empty")
         if backend is not None:
             body["backend"] = backend
+        if source_key is not None:
+            body["source_key"] = source_key
+        for field, value in (("related_source_key", related_source_key), ("related_task_id", related_task_id), ("source_event_key", source_event_key), ("source_update", source_update)):
+            if value is not None:
+                body[field] = value
         if runtime_mode is not None:
             body["runtime_mode"] = runtime_mode
         if model is not None:

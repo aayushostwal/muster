@@ -119,6 +119,13 @@ POST   /api/projects/{id}/tasks            {title, initial_prompt, backend?, mod
                                             -> creates Task(status=queued), immediately calls
                                                process_manager.trigger(task) (fire-and-forget), 201
 
+Task creation accepts an optional `source_key` (1–300 characters, trimmed).
+Keys are unique within a project. Repeating a key returns the original task
+with HTTP 200, without updating, dispatching, or reopening it, in every status.
+A database uniqueness constraint protects concurrent submissions. Unkeyed
+manual tasks remain independent. Deleting a task releases its source key;
+historical unkeyed tasks are not backfilled automatically.
+
 GET    /api/tasks                           ?status=<TaskStatus>&status=<TaskStatus>  # cross-project command center, newest activity first
 GET    /api/tasks/{id}
 POST   /api/tasks/{id}/cancel
@@ -249,6 +256,13 @@ not a remotely exposed shell or a replacement for application authentication.
 Cron tasks use `runtime_mode="interactive"` when the terminal runtime is enabled,
 launching the native CLI in the project's primary directory. When disabled,
 cron tasks use `runtime_mode="structured"` and the JSON process manager.
+Recurring terminal runs close after the native completion signal (Claude's
+Stop/StopFailure hook or Codex's agent-turn-complete notification). Muster
+requests `/exit`, then terminates the process group if it has not exited within
+three seconds. Output remains archived and a successful turn awaits review;
+closing a terminal does not mark the task done. Manual terminals remain open.
+Recurring MCP task creation requires a stable source key, and the scheduled
+prompt supplies source-key guidance.
 Existing tasks are migrated as structured tasks.
 
 ## Process manager (`backend/app/services/process_manager.py`)

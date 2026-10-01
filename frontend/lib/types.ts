@@ -57,6 +57,7 @@ export interface ProjectTaskTag {
 }
 
 export interface Task {
+  source_key?: string | null;
   id: string;
   project_id: string;
   title: string;
@@ -175,6 +176,9 @@ export interface Secret {
 }
 
 export interface CronJob {
+  timezone?: string;
+  window_start?: string | null;
+  window_end?: string | null;
   id: string;
   project_id: string;
   name: string;

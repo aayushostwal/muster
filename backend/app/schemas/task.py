@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.db.models import AgentBackend, RuntimeMode, TaskStatus
 
@@ -29,6 +29,25 @@ class TaskTagsMixin(BaseModel):
 
 
 class TaskCreate(TaskTagsMixin):
+    source_key: str | None = Field(default=None, min_length=1, max_length=300)
+    related_source_key: str | None = Field(default=None, min_length=1, max_length=300)
+    related_task_id: uuid.UUID | None = None
+    source_event_key: str | None = Field(default=None, min_length=1, max_length=300)
+    source_update: str | None = Field(default=None, min_length=1, max_length=12000)
+
+    @field_validator("source_key", "related_source_key", "source_event_key", "source_update", mode="before")
+    @classmethod
+    def normalize_source_key(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_source_update(self):
+        if (self.source_event_key is None) != (self.source_update is None):
+            raise ValueError("Supply both source_event_key and source_update")
+        if (self.related_source_key or self.related_task_id or self.source_event_key) and not self.source_key:
+            raise ValueError("Source linking and updates require source_key")
+        return self
+
     title: str
     initial_prompt: str
     backend: AgentBackend | None = None
@@ -70,6 +89,7 @@ class TaskRead(BaseModel):
 
     id: uuid.UUID
     project_id: uuid.UUID
+    source_key: str | None = None
     title: str
     initial_prompt: str
     status: TaskStatus

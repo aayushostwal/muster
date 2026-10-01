@@ -7,6 +7,8 @@ import binascii
 import ipaddress
 import uuid
 
+import anyio
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import settings
@@ -144,11 +146,14 @@ async def task_terminal_socket(websocket: WebSocket, task_id: uuid.UUID) -> None
     except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
         pass
     finally:
-        if sender is not None:
-            sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
-        if client_id is not None:
-            await terminal_manager.detach(task_id, client_id)
+        # ASGI connection cancellation must not interrupt cleanup at either
+        # await, leaving a stale client/input lease attached to the terminal.
+        with anyio.CancelScope(shield=True):
+            if sender is not None:
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
+            if client_id is not None:
+                await terminal_manager.detach(task_id, client_id)
 
 
 def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:

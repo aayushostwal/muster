@@ -44,6 +44,7 @@ describe("recurring agent editor", () => {
     await waitFor(() => expect(updateCron).toHaveBeenCalledWith("project-1", "job-1", {
       name: "Triage", prompt: "Review Jira", backend: "codex", model: "gpt-example",
       thinking_level: "high", interval_minutes: 120,
+      timezone: "Asia/Kolkata", window_start: null, window_end: null,
     }));
   });
 
@@ -57,6 +58,18 @@ describe("recurring agent editor", () => {
 
     await waitFor(() => expect(updateCron).toHaveBeenCalled());
     expect(updateCron.mock.calls[0][2]).not.toHaveProperty("interval_minutes");
+  });
+
+  it("saves and reloads an 11 AM to 9 PM daily window", async () => {
+    allCronJobs.mockResolvedValue({ items: [{ ...job, timezone: "Asia/Kolkata", window_start: "11:00", window_end: "21:00" }] });
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Limit to a daily run window")).toBeChecked();
+    expect(screen.getByLabelText("Window start")).toHaveValue("11:00");
+    expect(screen.getByLabelText("Window end")).toHaveValue("21:00");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(updateCron).toHaveBeenCalled());
+    expect(updateCron.mock.calls[0][2]).toMatchObject({ timezone: "Asia/Kolkata", window_start: "11:00", window_end: "21:00" });
   });
 
   it("shows paused jobs across projects before selecting a project", async () => {
