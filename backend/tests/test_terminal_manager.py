@@ -279,7 +279,15 @@ async def test_recurring_native_completion_closes_real_pty_and_keeps_output(
         await db.commit()
     await manager.trigger(task_id)
     running = manager._running[task_id]
-    await asyncio.wait_for(running.session.wait(), timeout=5)
+    # Allow the 3-second CLI exit deadline, 5-second SIGTERM grace and
+    # bounded PTY output drain. Do not cancel the session's shared waiter
+    # when the assertion times out; always reap the test subprocess.
+    try:
+        await asyncio.wait_for(asyncio.shield(running.session.wait()), timeout=12)
+    finally:
+        if running.session.returncode is None:
+            await running.session.terminate()
+            await running.session.wait()
     assert task_id not in manager._running
     assert running.session.returncode == 0 if accept_exit else running.session.returncode < 0
     assert "Triage complete" in running.log_path.read_text()
