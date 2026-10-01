@@ -5,6 +5,7 @@ import { api, apiBase, ApiError } from "./api";
 type ApiCase = [name: keyof typeof api, args: unknown[], path: string, method?: string, body?: unknown];
 
 const cases: ApiCase[] = [
+  ["terminalHistory", ["t", "1:2048"], "/api/tasks/t/terminal-history?cursor=1%3A2048"],
   ["health", [], "/api/health"],
   ["integrationConfig", [], "/api/integrations/config"],
   ["updateIntegrationConfig", [{ enabled: true }], "/api/integrations/config", "PATCH", { enabled: true }],

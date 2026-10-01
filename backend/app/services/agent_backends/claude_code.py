@@ -140,7 +140,7 @@ class ClaudeCodeAdapter:
                 allowed_tools.append(f"mcp__{server}__*")
             if bindings.recurring_memory_directory:
                 path = "/" + bindings.recurring_memory_directory.rstrip("/") + "/**"
-                allowed_tools += [f"{tool}({path})" for tool in ("Read", "Write", "Edit")]
+                allowed_tools += [f"{tool}({path})" for tool in ("Read", "Edit")]
         denied_tools = [
             rule["claude_pattern"]
             for rule in bindings.tool_rules

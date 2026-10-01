@@ -192,3 +192,17 @@ mock the process manager, so `pytest` needs no external services:
 ```bash
 pytest
 ```
+
+
+Completed native terminal sessions open a scrollable session history showing
+saved user prompts, agent replies, tool calls and results from the beginning.
+History is paginated independently of the bounded PTY replay buffer; use
+**Load more history** for subsequent entries and **View terminal output** to
+switch back to the archived terminal. Existing task-local Codex conversations
+and saved Claude session handles are supported. Missing native conversation
+files are reported explicitly. Individual entries above 64K characters are
+marked as abbreviated; internal instructions and hidden reasoning are excluded.
+
+Recurring Claude memory permissions use `Read(path)` and `Edit(path)` rules.
+Claude applies the Edit rule to all file-editing tools, including Write; a
+`Write(path)` rule is not recognized by its file permission checks.
