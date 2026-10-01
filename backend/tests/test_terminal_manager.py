@@ -566,3 +566,46 @@ async def test_source_follow_up_reopens_closed_terminal_with_persisted_context(t
         assert (await db.get(Task, task_id)).status == TaskStatus.running
     manager._running.pop(task_id)
     running.log_file.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", [AgentBackend.claude_code, AgentBackend.codex])
+async def test_closed_terminal_follow_up_resumes_saved_native_conversation(terminal_manager, backend):
+    manager, session_local = terminal_manager
+    task_id = await _create_task(session_local, status=TaskStatus.waiting_on_you, backend=backend)
+    saved_session_id = str(uuid.uuid4())
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        task.session_id = saved_session_id
+        db.add(Message(task_id=task_id, sender=MessageSender.user, content_text="Add a comment to PR #43"))
+        await db.commit()
+    manager._structured._latest_user_prompt.return_value = "Add a comment to PR #43"
+    await manager.resume(task_id)
+    running = manager._running[task_id]
+    argv = running.session.argv
+    flag = "--resume" if backend == AgentBackend.claude_code else "resume"
+    assert argv[argv.index(flag) + 1] == saved_session_id
+    assert argv[-1].endswith("Add a comment to PR #43")
+    assert "--session-id" not in argv
+    assert running.session_capture_task is None
+    async with session_local() as db:
+        task = await db.get(Task, task_id)
+        assert task.session_id == saved_session_id and task.status == TaskStatus.running
+        invocation = (await db.execute(select(TaskInvocation).where(TaskInvocation.task_id == task_id))).scalar_one()
+        assert invocation.session_id == saved_session_id
+    manager._running.pop(task_id)
+    running.log_file.close()
+
+
+@pytest.mark.asyncio
+async def test_live_follow_up_pastes_multiline_message_as_one_prompt(terminal_manager):
+    manager, session_local = terminal_manager
+    task_id = await _create_task(session_local)
+    await manager.trigger(task_id)
+    running = manager._running[task_id]
+    running.session.write = AsyncMock()
+    manager._structured._latest_user_prompt.return_value = "Review the PR\nThen add a comment"
+    await manager.resume(task_id)
+    running.session.write.assert_awaited_once_with(b"\x1b[200~Review the PR\nThen add a comment\x1b[201~\r")
+    manager._running.pop(task_id)
+    running.log_file.close()

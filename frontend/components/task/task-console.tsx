@@ -187,7 +187,7 @@ export function TaskConsole({ taskId }: { taskId: string }) {
         <section className="surface flex h-full min-h-0 flex-col overflow-hidden rounded-xl">
           {availableViews.length > 1 && <nav className="flex shrink-0 border-b border-white/[0.06] bg-black/10 p-1.5 lg:hidden" aria-label="Task views">{availableViews.map((item) => <button key={item} onClick={() => setView(item)} className={cn("flex-1 rounded-md px-3 py-1.5 text-[0.66rem] font-medium capitalize transition", view === item ? "bg-white/[0.08] text-white" : "text-slate-600")}>{item === "terminal" && current.runtime_mode === "structured" ? "Output" : item}</button>)}</nav>}
           <div className="min-h-0 flex-1 overflow-hidden">{view === "terminal" && <TerminalFrame interactive={current.runtime_mode === "interactive"}>{current.runtime_mode === "interactive" ? <LiveTerminal key={interactiveInvocationId ?? taskId} taskId={taskId} /> : <TerminalThread task={current} messages={messages.data?.items ?? []} invocations={invocations.data?.items ?? []} loading={messages.isPending} onOpenCanvas={() => setCanvasOpen(true)} />}</TerminalFrame>}{view === "activity" && <ActivityFeed events={events.data?.items ?? []} />}{view === "agents" && <AgentActivity invocations={invocations.data?.items ?? []} events={events.data?.items ?? []} />}</div>
-          {view === "terminal" && current.runtime_mode === "structured" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
+          {view === "terminal" && <Composer taskId={taskId} status={current.status} attentionReason={current.attention_reason} onReopeningChange={setReopening} onPreparePr={() => setPrRequestOpen((value) => value + 1)} />}
         </section>
         <div className={cn("h-full min-h-0", canvasOpen ? "fixed inset-x-2 bottom-2 top-[calc(var(--header-height)+0.5rem)] z-40 xl:static xl:z-auto" : "hidden")}><MagicCanvas taskId={taskId} messages={messages.data?.items ?? []} open={canvasOpen} onOpenChange={setCanvasOpen} /></div>
       </div>
@@ -258,7 +258,10 @@ function Composer({ taskId, status, attentionReason, onReopeningChange, onPrepar
     },
     onSuccess: async (saved) => {
       queryClient.setQueryData<ListResponse<Message>>(["messages", taskId], (current) => ({ items: [...(current?.items.filter((item) => !item.optimistic) ?? []), saved] }));
-      await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["task", taskId] }),
+        queryClient.invalidateQueries({ queryKey: ["invocations", taskId] }),
+      ]);
       setError("");
     },
     onSettled: () => onReopeningChange(false),

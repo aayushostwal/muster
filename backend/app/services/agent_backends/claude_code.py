@@ -250,6 +250,14 @@ class ClaudeCodeAdapter:
         cmd += ["--", rendered_prompt]
         return BackendCommand(argv=cmd)
 
+    def resume_interactive_command(
+        self, task: Task, project: Project, bindings: AdapterBindings,
+        secrets: dict[str, str], session_id: str, prompt: str,
+    ) -> BackendCommand:
+        command = self.build_interactive_command(task, project, bindings, secrets, prompt)
+        command.argv[1:1] = ["--resume", session_id]
+        return command
+
     def parse_line(self, raw: str) -> ParsedEvent | list[ParsedEvent] | None:
         raw = raw.strip()
         if not raw:
