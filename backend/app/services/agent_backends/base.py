@@ -177,6 +177,7 @@ class AdapterBindings:
     selected_agent_prompt: str | None = None
     approval_ids: tuple[uuid.UUID, ...] = ()
     native_claude_mcp_names: tuple[str, ...] = ()
+    recurring_memory_directory: str | None = None
 
 
 def pull_request_guidance(bindings: AdapterBindings) -> str:

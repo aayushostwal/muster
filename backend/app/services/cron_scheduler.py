@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from app.services.recurring_memory import guidance as memory_guidance
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -131,7 +132,7 @@ async def _fire_cron_job(cron_job_id: uuid.UUID, *, allow_disabled: bool = False
         task = Task(
             project_id=cron_job.project_id,
             title=f"[cron] {cron_job.name}",
-            initial_prompt=cron_job.prompt + _INTAKE_GUIDANCE,
+            initial_prompt=cron_job.prompt + _INTAKE_GUIDANCE + memory_guidance(cron_job.id),
             backend=cron_job.backend,
             model=cron_job.model,
             thinking_level=cron_job.thinking_level,

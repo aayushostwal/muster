@@ -129,12 +129,18 @@ class ClaudeCodeAdapter:
             and rule.get("claude_pattern")
         ]
         if recurring:
+            from app.services.claude_plugins import mcp_names
             # Native Claude-managed servers are intentionally absent from the
             # generated MCP config, but their tools still need an allow rule.
             # Claude permits allow globs only under a literal server prefix.
-            for name in sorted(set(bindings.mcp_servers) | set(bindings.native_claude_mcp_names)):
+            names = set(bindings.mcp_servers) | set(bindings.native_claude_mcp_names)
+            names.update(mcp_names(bindings.primary_directory))
+            for name in sorted(names):
                 server = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
                 allowed_tools.append(f"mcp__{server}__*")
+            if bindings.recurring_memory_directory:
+                path = "/" + bindings.recurring_memory_directory.rstrip("/") + "/**"
+                allowed_tools += [f"{tool}({path})" for tool in ("Read", "Write", "Edit")]
         denied_tools = [
             rule["claude_pattern"]
             for rule in bindings.tool_rules
@@ -171,6 +177,9 @@ class ClaudeCodeAdapter:
                 json.dumps(self._normalize_agent_profiles(selected_agent_profiles)),
             ]
         system_sections = [pull_request_guidance(bindings)]
+        if bindings.recurring_memory_directory and recurring:
+            from app.services.recurring_memory import guidance
+            system_sections.append(guidance(task.cron_job_id))
         if bindings.selected_agent_prompt:
             system_sections.append(bindings.selected_agent_prompt)
         selected_skills = invoked_resources(bindings.skills, prompt)
