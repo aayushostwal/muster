@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 
 from app.config import settings
@@ -102,7 +103,10 @@ class ClaudeCodeAdapter:
         interactive: bool = False,
         prompt: str = "",
     ) -> list[str]:
-        flags: list[str] = ["--permission-mode", "acceptEdits"]
+        recurring = getattr(task, "cron_job_id", None) is not None
+        flags: list[str] = ["--permission-mode", "auto" if recurring else "acceptEdits"]
+        if recurring or not interactive:
+            flags += ["--permission-prompts", "none"]
         if not interactive:
             flags = [
                 "--output-format",
@@ -111,8 +115,6 @@ class ClaudeCodeAdapter:
                 # --output-format stream-json.
                 "--verbose",
                 *flags,
-                "--permission-prompts",
-                "none",
                 "--include-hook-events",
                 "--forward-subagent-text",
             ]
@@ -126,6 +128,13 @@ class ClaudeCodeAdapter:
             and rule.get("backend") in {"all", "claude_code"}
             and rule.get("claude_pattern")
         ]
+        if recurring:
+            # Native Claude-managed servers are intentionally absent from the
+            # generated MCP config, but their tools still need an allow rule.
+            # Claude permits allow globs only under a literal server prefix.
+            for name in sorted(set(bindings.mcp_servers) | set(bindings.native_claude_mcp_names)):
+                server = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+                allowed_tools.append(f"mcp__{server}__*")
         denied_tools = [
             rule["claude_pattern"]
             for rule in bindings.tool_rules

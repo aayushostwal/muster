@@ -936,6 +936,11 @@ class ProcessManager:
             skills=skills,
             selected_agent_prompt=selected.system_prompt if selected else None,
             approval_ids=tuple(approval.id for approval in one_time_approvals),
+            native_claude_mcp_names=tuple(
+                row.name for row in global_mcp
+                if row.id in native_claude_mcp_ids and row.enabled
+                and (override_map.get(("mcp", row.id)) is None or override_map[("mcp", row.id)].enabled)
+            ),
         )
 
     async def _latest_user_prompt(self, task_id: uuid.UUID) -> str | None:
@@ -1243,6 +1248,23 @@ class ProcessManager:
         if fingerprint in running.permission_requests:
             return
         running.permission_requests.add(fingerprint)
+        async with SessionLocal() as db:
+            task = await db.get(Task, task_id)
+            recurring = task is not None and task.cron_job_id is not None
+        if recurring:
+            # Scheduled jobs have no approval host. Surface a real denial as
+            # a failed run rather than creating a request nobody can answer.
+            running.pending_final_status = TaskStatus.failed
+            await self._persist_and_broadcast_message(
+                task_id, MessageSender.system,
+                f"Recurring run could not use {request.tool_name}: "
+                f"{request.reason or 'tool access was denied'}. "
+                "This run ended without waiting for approval.",
+            )
+            await self._set_status(task_id, TaskStatus.failed, completed=True)
+            if running.process.returncode is None:
+                await self._terminate_process_tree(running.process)
+            return
         running.blocking_question_hit = True
         rule = _suggest_permission_rule(running.backend, request.tool_name, request.tool_input)
         async with SessionLocal() as db:

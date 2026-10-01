@@ -218,6 +218,8 @@ async def test_claude_uses_native_imported_mcp_without_duplicate_config(db_engin
         codex_bindings = await process_manager._bindings_for(db, loaded, task)
 
     assert "jira" not in claude_bindings.mcp_servers
+    assert claude_bindings.native_claude_mcp_names == ("jira",)
+    assert codex_bindings.native_claude_mcp_names == ()
     assert "docs" in claude_bindings.mcp_servers
     assert "jira" in codex_bindings.mcp_servers
 
@@ -228,3 +230,50 @@ async def test_claude_uses_native_imported_mcp_without_duplicate_config(db_engin
         task.backend = AgentBackend.claude_code
         fallback_bindings = await process_manager._bindings_for(db, loaded, task)
     assert "jira" in fallback_bindings.mcp_servers
+    assert fallback_bindings.native_claude_mcp_names == ()
+
+
+@pytest.mark.asyncio
+async def test_recurring_tool_denial_fails_without_creating_approval(db_engine, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from sqlalchemy import select
+    from app.db.models import CronJob, Message, TaskInvocation
+    from app.services.process_manager import ProcessManager, RunningProcess
+    from app.services.agent_backends.base import PermissionRequest
+    import app.services.process_manager as pm_module
+
+    factory = async_sessionmaker(db_engine, expire_on_commit=False)
+    monkeypatch.setattr(pm_module, "SessionLocal", factory)
+    monkeypatch.setattr(pm_module.settings, "data_dir", tmp_path)
+    pm_module.settings.transcripts_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pm_module, "broadcast", AsyncMock())
+    manager = ProcessManager()
+    terminate = AsyncMock()
+    monkeypatch.setattr(manager, "_terminate_process_tree", terminate)
+    async with factory() as db:
+        project = Project(name="Unattended", default_backend=AgentBackend.claude_code)
+        db.add(project)
+        await db.flush()
+        job = CronJob(project_id=project.id, name="triage", schedule_expr="0 * * * *", prompt="Check Slack", backend=AgentBackend.claude_code)
+        db.add(job)
+        await db.flush()
+        task = Task(project_id=project.id, title="triage", initial_prompt="Check Slack", cron_job_id=job.id, status=TaskStatus.running, backend=AgentBackend.claude_code)
+        db.add(task)
+        await db.flush()
+        invocation = TaskInvocation(task_id=task.id, sequence=1, backend=AgentBackend.claude_code, status="running")
+        db.add(invocation)
+        await db.commit()
+        task_id, invocation_id = task.id, invocation.id
+    process = SimpleNamespace(returncode=None)
+    running = RunningProcess(process=process, invocation_id=invocation_id, backend=AgentBackend.claude_code)
+    await manager._handle_permission_request(task_id, running, PermissionRequest(tool_name="mcp__jira__delete_issue", reason="Denied by project rule"))
+    assert running.pending_final_status == TaskStatus.failed
+    assert not running.blocking_question_hit
+    terminate.assert_awaited_once_with(process)
+    async with factory() as db:
+        task = await db.get(Task, task_id)
+        assert task.status == TaskStatus.failed and task.completed_at is not None
+        assert (await db.execute(select(ToolApprovalRequest))).scalars().all() == []
+        message = (await db.execute(select(Message))).scalar_one()
+        assert not message.is_blocking_question
+        assert "Denied by project rule" in message.content_text

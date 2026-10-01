@@ -256,6 +256,18 @@ not a remotely exposed shell or a replacement for application authentication.
 Cron tasks use `runtime_mode="interactive"` when the terminal runtime is enabled,
 launching the native CLI in the project's primary directory. When disabled,
 cron tasks use `runtime_mode="structured"` and the JSON process manager.
+Recurring Claude tasks launch with `--permission-mode auto` and
+`--permission-prompts none`, plus `mcp__<server>__*` allow rules for enabled
+project/global and imported native Claude MCP servers. Manual tasks keep
+`acceptEdits`. Native server names are retained separately from generated MCP
+configuration so pre-approval does not duplicate OAuth-managed connectors.
+Explicit deny rules still apply. Codex recurring tasks use `never` approval
+policy for first, resumed and interactive invocations, retaining workspace
+sandbox restrictions. A tool denial in a structured recurring run becomes a
+failed run with a recorded reason, without creating a pending approval.
+Auto mode requires a supported Claude model and organization policy; connector
+authentication remains a prerequisite. New launch settings apply on the next
+invocation, including Run now.
 Recurring terminal runs close after the native completion signal (Claude's
 Stop/StopFailure hook or Codex's agent-turn-complete notification). Muster
 requests `/exit`, then terminates the process group if it has not exited within
