@@ -48,6 +48,16 @@ _INTAKE_GUIDANCE = (
     "slack:<channel-id>:<root-thread-timestamp>. Use the same key on every iteration, "
     "never a run ID or title. An existing key returns the original task even if done. "
     "Do not restart or resume an existing task just because it was found again. "
+    "For NEW Slack replies, call create_task with the same thread source_key, "
+    "source_event_key=slack:<channel-id>:<message-timestamp> and source_update containing "
+    "the new message. Include its edit timestamp in the event key for edited messages. "
+    "The API appends each event once and continues the same task. When a Slack thread "
+    "references an existing Jira issue, include related_source_key=jira:<issue-id> "
+    "(or jira:<issue-key>); this saves a persistent thread alias to the Jira task. "
+    "Only link explicit, unambiguous issue references; flag unclear links for review. "
+    "For a legacy unkeyed task, inspect its brief to verify the exact issue reference "
+    "and supply related_task_id plus related_source_key to register that identity. "
+    "Do not create a fallback task if related-source linking fails. "
     "Finish this run after processing the current batch; do not start a persistent loop."
 )
 

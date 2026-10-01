@@ -475,10 +475,27 @@ class TerminalManager:
         async with self._lock_for(task_id):
             prompt = await self._structured._latest_user_prompt(task_id)
             running = self._running.get(task_id)
+            if running is not None and running.turn_finished and running.session is not None:
+                await running.session.wait()
+                running = self._running.get(task_id)
             if running is not None and running.session is not None and prompt:
                 await running.session.write(prompt.encode("utf-8") + b"\r")
                 return
             if running is None:
+                from app.services.process_manager import ProcessManager
+
+                async with SessionLocal() as db:
+                    task = await db.get(Task, task_id)
+                    if task is None:
+                        return
+                    if prompt:
+                        prompt = await ProcessManager._runtime_handoff_prompt_db(
+                            db, task, task.backend, task.backend
+                        )
+                    task.status = TaskStatus.queued
+                    task.attention_reason = None
+                    task.completed_at = None
+                    await db.commit()
                 await self._spawn(task_id, prompt)
 
     async def cancel(self, task_id: uuid.UUID) -> None:

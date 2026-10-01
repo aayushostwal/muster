@@ -134,6 +134,11 @@ export const api = {
     body: {
       title: string;
       initial_prompt: string;
+      source_key?: string;
+      related_source_key?: string;
+      related_task_id?: string;
+      source_event_key?: string;
+      source_update?: string;
       backend?: AgentBackend;
       model?: string;
       context_strategy?: string;

@@ -122,6 +122,9 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
                 "model": "sonnet",
                 "tags": ["integration"],
                 "source_key": "jira:10001",
+                "related_source_key": "slack:C1:100",
+                "source_event_key": "slack:C1:101",
+                "source_update": "Check SSO",
             },
         )
 
@@ -137,6 +140,9 @@ async def test_create_task_resolves_project_name_and_dispatches_via_api() -> Non
         "runtime_mode": "interactive",
         "model": "sonnet",
         "source_key": "jira:10001",
+        "related_source_key": "slack:C1:100",
+        "source_event_key": "slack:C1:101",
+        "source_update": "Check SSO",
     }
 
 

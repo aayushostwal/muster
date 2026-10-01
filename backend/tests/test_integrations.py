@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
@@ -130,6 +131,9 @@ async def test_slack_thread_creates_one_jira_issue_and_ambiguous_goes_to_review(
     triggered = []
     async def trigger(task_id): triggered.append(task_id)
     monkeypatch.setattr(integrations.process_manager, "trigger", trigger)
+    resumed = []
+    async def resume(task_id): resumed.append(task_id)
+    monkeypatch.setattr(integrations.process_manager, "resume", resume)
     jira = FakeJira()
     slack = FakeSlack()
     async with session_local() as db:
@@ -152,10 +156,62 @@ async def test_slack_thread_creates_one_jira_issue_and_ambiguous_goes_to_review(
         await integrations._sync_slack(db, settings, slack, jira, until + timedelta(minutes=1))
         await integrations._sync_slack(db, settings, slack, jira, until + timedelta(minutes=2))
         assert jira.posted == ["Slack thread reply by U-OTHER:\nAlso check SSO"]
+        assert resumed == triggered
+        messages = (await db.execute(select(Message).where(Message.sender == MessageSender.user))).scalars().all()
+        assert len(messages) == 1 and "Also check SSO" in messages[0].content_text
         slack.message = {**slack.message, "ts": "1700000000.000002", "thread_ts": "1700000000.000002", "text": "FYI, meeting moved"}
         await integrations._sync_slack(db, settings, slack, jira, until + timedelta(minutes=3))
         events = (await db.execute(select(IntegrationEvent).where(IntegrationEvent.status == "needs_review"))).scalars().all()
         assert len(events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_first_delivery", [False, True])
+async def test_slack_jira_reference_reuses_cron_task_and_appends_unique_replies(db_engine, monkeypatch, fail_first_delivery):
+    session_local = async_sessionmaker(db_engine, expire_on_commit=False)
+    trigger, resume = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(integrations.process_manager, "trigger", trigger)
+    monkeypatch.setattr(integrations.process_manager, "resume", resume)
+    jira, slack = FakeJira(), FakeSlack()
+    slack.message["text"] = "Please update APP-1 to support SSO"
+    async with session_local() as db:
+        directory = DirectoryResource(name="Work", path="/tmp/work")
+        db.add(directory)
+        await db.flush()
+        project = Project(name="Work", default_backend=AgentBackend.codex, primary_directory_id=directory.id)
+        db.add(project)
+        await db.flush()
+        task = Task(project_id=project.id, source_key="jira:10001", title="Fix login", initial_prompt="work", backend=AgentBackend.codex)
+        db.add_all([task, JiraProjectMapping(jira_project_key="APP", project_id=project.id)])
+        settings = IntegrationSettings(id=1, slack_jira_project_key="APP")
+        db.add(settings)
+        await db.commit()
+        until = datetime.fromtimestamp(1700000001, timezone.utc)
+        if fail_first_delivery:
+            resume.side_effect = RuntimeError("runtime unavailable")
+            with pytest.raises(RuntimeError, match="runtime unavailable"):
+                await integrations._sync_slack(db, settings, slack, jira, until)
+            resume.side_effect = None
+            resume.reset_mock()
+            # The pending root update is older than this new polling window.
+            settings.slack_cursor = until + timedelta(hours=2)
+        for _ in range(2):
+            await integrations._sync_slack(db, settings, slack, jira, until)
+        trigger.assert_not_awaited()
+        resume.assert_awaited_once_with(task.id)
+        assert jira.created == []
+        settings.slack_cursor = None
+        slack.replies.append({"ts": "1700000020.000001", "user": "U-OTHER", "text": "Use Okta"})
+        for _ in range(2):
+            await integrations._sync_slack(db, settings, slack, jira, until + timedelta(minutes=1))
+        assert resume.await_count == 2
+        messages = (await db.execute(select(Message).where(Message.sender == MessageSender.user))).scalars().all()
+        assert len(messages) == 2 and "Use Okta" in messages[-1].content_text
+        assert len((await db.execute(select(Task))).scalars().all()) == 1
+        slack.message = {**slack.message, "ts": "1700000030.000001", "text": "Check APP-1 and APP-2"}
+        await integrations._sync_slack(db, settings, slack, jira, until + timedelta(minutes=1))
+        review = (await db.execute(select(IntegrationEvent).where(IntegrationEvent.status == "needs_review"))).scalars().all()
+        assert len(review) == 1
 
 
 @pytest.mark.asyncio

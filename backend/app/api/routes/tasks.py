@@ -23,6 +23,7 @@ from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.run_attempt import TaskRunAttemptRead
 from app.schemas.task import TaskBackendUpdate, TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskTagsUpdate, TaskThinkingUpdate
 from app.services.process_manager import process_manager
+from app.services import task_sources
 
 router = APIRouter(tags=["tasks"])
 
@@ -58,18 +59,49 @@ async def list_tasks(
 
 @router.post("/projects/{project_id}/tasks", status_code=201, response_model=TaskRead)
 async def create_task(project_id: uuid.UUID, body: TaskCreate, response: Response, db: AsyncSession = Depends(get_db)):
+    if body.source_key is not None:
+        async with task_sources.lock_for(project_id):
+            return await _create_task(project_id, body, response, db)
+    return await _create_task(project_id, body, response, db)
+
+
+async def _create_task(project_id: uuid.UUID, body: TaskCreate, response: Response, db: AsyncSession):
     project = await _get_project_or_404(db, project_id)
 
     async def existing_source_task() -> Task | None:
-        return (await db.execute(select(Task).where(
-            Task.project_id == project_id, Task.source_key == body.source_key,
-        ))).scalar_one_or_none()
+        return await task_sources.find_task(db, project_id, body.source_key)
+
+    async def update_existing(existing: Task) -> Task:
+        await task_sources.bind_source(db, existing, body.source_key)
+        if body.related_source_key:
+            await task_sources.bind_source(db, existing, body.related_source_key)
+        event = await task_sources.record_update(db, existing, body.source_event_key, body.source_update)
+        await db.commit()
+        await task_sources.dispatch_update(db, event)
+        await db.refresh(existing)
+        response.status_code = 200
+        return existing
 
     if body.source_key is not None:
         existing = await existing_source_task()
+        target = None
+        if body.related_task_id is not None:
+            target = await db.get(Task, body.related_task_id)
+            if target is None or target.project_id != project_id:
+                raise HTTPException(status_code=404, detail="Related task not found in this project")
+        if body.related_source_key is not None:
+            related = await task_sources.find_task(db, project_id, body.related_source_key)
+            if related is None and target is None:
+                raise HTTPException(status_code=404, detail="Related source task not found in this project")
+            if related is not None and target is not None and related.id != target.id:
+                raise HTTPException(status_code=409, detail="Related source belongs to another task")
+            target = related or target
+        if target is not None:
+            if existing is not None and existing.id != target.id:
+                raise HTTPException(status_code=409, detail="Sources already belong to different tasks")
+            existing = target
         if existing is not None:
-            response.status_code = 200
-            return existing
+            return await update_existing(existing)
     from app.services import task_tags
 
     try:
@@ -98,7 +130,7 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, response: Respons
         project_id=project_id,
         source_key=body.source_key,
         title=body.title,
-        initial_prompt=body.initial_prompt,
+        initial_prompt=body.initial_prompt + (f"\n\nLatest source update:\n{body.source_update}" if body.source_update else ""),
         status=TaskStatus.queued,
         backend=body.backend or project.default_backend,
         runtime_mode=runtime_mode,
@@ -111,17 +143,23 @@ async def create_task(project_id: uuid.UUID, body: TaskCreate, response: Respons
     )
     db.add(task)
     try:
+        await db.flush()
+        if body.source_key is not None:
+            await task_sources.bind_source(db, task, body.source_key)
+        event = await task_sources.record_update(db, task, body.source_event_key, body.source_update)
         await db.commit()
     except IntegrityError:
         await db.rollback()
         if body.source_key is not None:
             existing = await existing_source_task()
             if existing is not None:
-                response.status_code = 200
-                return existing
+                return await update_existing(existing)
         raise
     await db.refresh(task)
-    await process_manager.trigger(task.id)
+    if event is None:
+        await process_manager.trigger(task.id)
+    else:
+        await task_sources.dispatch_update(db, event, fresh=True)
     return task
 
 

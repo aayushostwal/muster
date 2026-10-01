@@ -553,6 +553,27 @@ class PrDeliveryRun(Base):
     project: Mapped[Project] = relationship(back_populates="pr_delivery_runs")
 
 
+class TaskSourceLink(Base):
+    """Additional external identities that share a task's conversation."""
+    __tablename__ = "task_source_links"
+    __table_args__ = (UniqueConstraint("project_id", "source_key", name="uq_task_source_link"),)
+    id: Mapped[uuid.UUID] = _uuid_col()
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    source_key: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
+class TaskSourceEvent(Base):
+    """Durable receipt for a source update and its pending runtime dispatch."""
+    __tablename__ = "task_source_events"
+    __table_args__ = (UniqueConstraint("task_id", "event_key", name="uq_task_source_event"),)
+    id: Mapped[uuid.UUID] = _uuid_col()
+    task_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    event_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+
+
 class Message(Base):
     __tablename__ = "messages"
 

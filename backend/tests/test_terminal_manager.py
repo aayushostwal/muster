@@ -21,6 +21,8 @@ from app.db.models import (
     DirectoryBinding,
     DirectoryResource,
     Project,
+    Message,
+    MessageSender,
     RuntimeMode,
     Task,
     TaskInvocation,
@@ -531,3 +533,26 @@ async def test_attach_replays_new_session_when_client_sequence_is_ahead(
     assert output["type"] == "output"
     assert base64.b64decode(output["data_b64"]) == b"current session"
     manager._running.pop(task_id).log_file.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TaskStatus.done, TaskStatus.waiting_on_you])
+async def test_source_follow_up_reopens_closed_terminal_with_persisted_context(terminal_manager, status):
+    manager, session_local = terminal_manager
+    task_id = await _create_task(session_local, status=status, backend=AgentBackend.claude_code)
+    async with session_local() as db:
+        db.add_all([
+            Message(task_id=task_id, sender=MessageSender.agent, content_text="Login fix is ready"),
+            Message(task_id=task_id, sender=MessageSender.user, content_text="Also support Okta"),
+        ])
+        await db.commit()
+    manager._structured._latest_user_prompt.return_value = "Also support Okta"
+    await manager.resume(task_id)
+    running = manager._running[task_id]
+    prompt = running.session.argv[-1]
+    assert "ORIGINAL BRIEF\nFix the bug" in prompt
+    assert "Login fix is ready" in prompt and "Also support Okta" in prompt
+    async with session_local() as db:
+        assert (await db.get(Task, task_id)).status == TaskStatus.running
+    manager._running.pop(task_id)
+    running.log_file.close()
