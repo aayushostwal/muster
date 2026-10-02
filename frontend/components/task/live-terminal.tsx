@@ -5,6 +5,7 @@ import type { Terminal } from "@xterm/xterm";
 import { Maximize2, Radio, WifiOff } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { TerminalHistory } from "@/components/task/terminal-history";
 import { Button } from "@/components/ui/button";
 import { useTerminalSession } from "@/hooks/use-terminal-session";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,7 @@ export function LiveTerminal({ taskId }: { taskId: string }) {
   const fitRef = useRef<FitAddon | null>(null);
   const pendingOutputRef = useRef<Uint8Array[]>([]);
   const pendingGapRef = useRef(false);
+  const [historyChoice, setHistoryChoice] = useState<boolean | null>(null);
   const [ready, setReady] = useState(false);
 
   const onOutput = useCallback((data: Uint8Array) => {
@@ -104,14 +106,20 @@ export function LiveTerminal({ taskId }: { taskId: string }) {
     };
   }, [resize, sendBytes, sendText]);
 
+  const showHistory = historyChoice ?? Boolean(session.exit);
+
   return (
     <div className="relative h-full min-h-0 bg-[#05070b]">
       <div
         ref={containerRef}
-        className={cn("h-full min-h-0 px-2 py-2 transition-opacity", ready ? "opacity-100" : "opacity-0")}
+        className={cn("h-full min-h-0 px-2 pb-2 pt-12 transition-opacity", showHistory ? "hidden" : ready ? "opacity-100" : "opacity-0")}
         aria-label="Interactive agent terminal"
       />
-      {!ready && <div className="absolute inset-0 grid place-items-center font-mono text-xs text-slate-600">Starting terminal renderer…</div>}
+      {showHistory && <div className="absolute inset-0 pt-12"><TerminalHistory taskId={taskId} /></div>}
+      {!ready && !showHistory && <div className="absolute inset-0 grid place-items-center font-mono text-xs text-slate-600">Starting terminal renderer…</div>}
+      <div className="absolute left-3 top-3 z-10 flex gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setHistoryChoice(!showHistory)}>{showHistory ? "View terminal output" : "View session history"}</Button>
+      </div>
       <div className="pointer-events-none absolute right-3 top-3 flex items-center gap-2">
         <span className={cn(
           "flex items-center gap-1.5 rounded-md border bg-black/75 px-2 py-1 font-mono text-[0.56rem] uppercase tracking-wider backdrop-blur",
@@ -121,14 +129,14 @@ export function LiveTerminal({ taskId }: { taskId: string }) {
           {session.connection}
         </span>
       </div>
-      {session.control === "read_only" && !session.exit && (
+      {!showHistory && session.control === "read_only" && !session.exit && (
         <div className="absolute inset-x-0 bottom-3 flex justify-center">
           <Button className="pointer-events-auto shadow-panel" size="sm" onClick={session.takeControl}>
             <Maximize2 className="h-3.5 w-3.5" /> Take control
           </Button>
         </div>
       )}
-      {session.exit && !session.error && (
+      {!showHistory && session.exit && !session.error && (
         <div className="absolute inset-x-0 bottom-3 flex justify-center">
           <span className="rounded-md border border-white/10 bg-black/80 px-3 py-1.5 font-mono text-[0.62rem] text-slate-400 backdrop-blur">
             {session.exit.archived ? "Archived terminal output" : `Terminal exited${session.exit.code === null ? "" : ` (${session.exit.code})`}`}

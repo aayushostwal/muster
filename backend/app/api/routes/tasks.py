@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import uuid
 
+import anyio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -433,3 +435,28 @@ async def list_task_events(task_id: uuid.UUID, db: AsyncSession = Depends(get_db
         select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.created_at)
     )
     return {"items": [TaskEventRead.model_validate(row) for row in result.scalars().all()]}
+
+
+@router.get("/tasks/{task_id}/terminal-history")
+async def terminal_history(
+    task_id: uuid.UUID,
+    cursor: str = Query("0:0", max_length=64),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.terminal_history import history_paths, read_page
+
+    task = await _get_task_or_404(db, task_id)
+    result = await db.execute(select(TaskInvocation.session_id).where(
+        TaskInvocation.task_id == task_id,
+        TaskInvocation.session_id.is_not(None),
+    ))
+    ids = list(result.scalars().all())
+    if task.session_id:
+        ids.append(task.session_id)
+    try:
+        paths = await anyio.to_thread.run_sync(history_paths, task_id, ids)
+        return await anyio.to_thread.run_sync(read_page, paths, cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Session history could not be read; try again") from exc

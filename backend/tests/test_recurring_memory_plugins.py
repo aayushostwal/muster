@@ -43,7 +43,8 @@ def test_plugin_namespace_allow_rules_cover_live_slack_tool_and_respect_project_
     allowed = flags[flags.index('--allowedTools') + 1].split(',')
     actual_tool = 'mcp__plugin_slack_slack__slack_search_public_and_private'
     assert any(actual_tool.startswith(rule.removesuffix('*')) for rule in allowed)
-    assert f'Write(/{tmp_path}/memory/**)' in allowed
+    assert f'Write(/{tmp_path}/memory/**)' not in allowed
+    assert f'Edit(/{tmp_path}/memory/**)' in allowed
     assert 'mcp__plugin_slack_slack__slack_send_message' in flags[flags.index('--disallowedTools') + 1]
     settings_path = tmp_path / '.claude' / 'settings.local.json'
     settings_path.write_text(json.dumps({'enabledPlugins': {'slack@marketplace': False}}))

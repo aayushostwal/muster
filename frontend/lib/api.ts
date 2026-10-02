@@ -89,6 +89,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 
 export const api = {
+  terminalHistory: (taskId: string, cursor: string) => request<{
+    items: Array<{ role: "user" | "assistant" | "tool" | "tool_result"; text: string; timestamp: string | null; truncated: boolean }>;
+    next_cursor: string | null;
+  }>(`/api/tasks/${taskId}/terminal-history?cursor=${encodeURIComponent(cursor)}`),
   health: () => request<{ status: string }>("/api/health"),
   integrationConfig: () => request<IntegrationConfig>("/api/integrations/config"),
   updateIntegrationConfig: (body: Partial<IntegrationConfig> & { jira_token?: string; slack_token?: string }) =>
