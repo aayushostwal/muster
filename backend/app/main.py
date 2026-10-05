@@ -16,6 +16,7 @@ from app.api.routes import (
     registry,
     secrets as secrets_routes,
     task_tags,
+    task_attachments,
     terminal_ws,
     tasks,
     tools,
@@ -23,6 +24,7 @@ from app.api.routes import (
 )
 from app.services.cron_scheduler import scheduler, sync_jobs_from_db
 from app.services.process_manager import process_manager
+from app.services import task_attachments as task_attachment_service
 
 
 @asynccontextmanager
@@ -30,6 +32,14 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     await process_manager.reconcile_interrupted_tasks()
     scheduler.start()
+    task_attachment_service.cleanup_expired_pending()
+    scheduler.add_job(
+        task_attachment_service.cleanup_expired_pending,
+        "interval",
+        hours=1,
+        id="task-attachment-cleanup",
+        replace_existing=True,
+    )
     sync_jobs_from_db()
     yield
     scheduler.shutdown()
@@ -44,6 +54,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(task_attachments.AttachmentUploadLimitMiddleware)
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(registry.router, prefix="/api")
@@ -58,6 +69,7 @@ app.include_router(cron.router, prefix="/api")
 app.include_router(cron.global_router, prefix="/api")
 app.include_router(integrations.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
+app.include_router(task_attachments.router, prefix="/api")
 app.include_router(task_tags.router, prefix="/api")
 app.include_router(pr_delivery.router, prefix="/api")
 app.include_router(ws.router)

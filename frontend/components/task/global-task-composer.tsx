@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { SlashCommandMenu } from "@/components/task/slash-command-menu";
+import { TaskAttachmentPicker } from "@/components/task/task-attachment-picker";
 import { SLASH_PATTERN, useSlashCommands, type SlashCommandItem } from "@/hooks/use-slash-commands";
 import { api } from "@/lib/api";
 import type { Project } from "@/lib/types";
@@ -35,6 +36,7 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
   const [error, setError] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -74,14 +76,16 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
     : prompt.trim();
 
   const createTask = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!project) throw new Error("Tag one project before sending this task.");
       if (!cleanPrompt) throw new Error("Describe what the agent should do.");
       const firstLine = cleanPrompt.split("\n").find((line) => line.trim())?.trim() ?? cleanPrompt;
       const title = firstLine.length > 96 ? `${firstLine.slice(0, 95).trimEnd()}…` : firstLine;
+      const media = await Promise.all(files.map(api.uploadTaskAttachment));
       return api.createTask(project.id, {
         title,
         initial_prompt: cleanPrompt,
+        media,
       });
     },
     onSuccess: async (task) => {
@@ -104,6 +108,7 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
     setSlashQuery(null);
     setSlashActiveIndex(0);
     setError("");
+    setFiles([]);
   };
 
   const selectProject = (selection: Project) => {
@@ -355,6 +360,10 @@ export function GlobalTaskComposer({ compact = false }: { compact?: boolean }) {
                 onSelect={selectSlashCommand}
                 className="absolute inset-x-3 bottom-3"
               />
+            </div>
+
+            <div className="border-t border-white/[0.05] px-3 py-2.5">
+              <TaskAttachmentPicker files={files} onChange={setFiles} disabled={createTask.isPending} compact onError={setError} />
             </div>
 
             {error && (

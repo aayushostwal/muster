@@ -107,6 +107,8 @@ class TerminalManager:
                 return
             secrets = {secret.key_name: decrypt_secret(secret.encrypted_value) for secret in project.secrets}
             adapter = _ADAPTERS[task.backend]
+            from app.services.task_attachments import render_prompt
+            rendered_prompt = render_prompt(prompt or task.initial_prompt, task.media)
             resuming_native = resume_session and bool(task.session_id)
             native_session_id = task.session_id if resuming_native else (
                 str(uuid.uuid4()) if task.backend == AgentBackend.claude_code else None
@@ -114,7 +116,7 @@ class TerminalManager:
             if resuming_native:
                 command = adapter.resume_interactive_command(
                     task, project, bindings, secrets,
-                    session_id=native_session_id, prompt=prompt or task.initial_prompt,
+                    session_id=native_session_id, prompt=rendered_prompt,
                 )
             else:
                 command = adapter.build_interactive_command(
@@ -122,7 +124,7 @@ class TerminalManager:
                     project,
                     bindings,
                     secrets,
-                    prompt=prompt or task.initial_prompt,
+                    prompt=rendered_prompt,
                     session_id=native_session_id,
                 )
             recurring = task.cron_job_id is not None

@@ -10,6 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.db.models import AgentBackend, RuntimeMode, TaskStatus
 
 
+class TaskAttachment(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    path: str = Field(min_length=1, max_length=2000)
+    mime: str = Field(default="application/octet-stream", max_length=255)
+    size: int = Field(ge=0, le=25 * 1024 * 1024)
+    url: str = Field(min_length=1, max_length=2000)
+
+
 class TaskTagsMixin(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=8)
 
@@ -56,7 +64,7 @@ class TaskCreate(TaskTagsMixin):
     thinking_level: Literal["low", "medium", "high", "xhigh", "max"] | None = None
     agent_id: uuid.UUID | None = None
     context_strategy: str | None = None
-    media: list = Field(default_factory=list)
+    media: list[TaskAttachment] = Field(default_factory=list, max_length=10)
     runtime_mode: RuntimeMode | None = None
 
 
@@ -92,6 +100,7 @@ class TaskRead(BaseModel):
     source_key: str | None = None
     title: str
     initial_prompt: str
+    media: list[TaskAttachment]
     status: TaskStatus
     attention_reason: str | None
     backend: AgentBackend

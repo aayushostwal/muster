@@ -684,7 +684,8 @@ class ProcessManager:
                 )
                 await self._append_transcript(task_id, "user", prompt)
             else:
-                prompt = initial_prompt or task.initial_prompt
+                from app.services.task_attachments import render_prompt
+                prompt = render_prompt(initial_prompt or task.initial_prompt, task.media)
                 cmd = adapter.build_command(task, project, bindings, secrets, prompt)
                 await self._append_transcript(task_id, "user", prompt)
 
@@ -917,6 +918,15 @@ class ProcessManager:
         project_rules.extend(dict(tool.config or {}) for tool in project.tools)
         project_rules.extend(dict(approval.permission_rule or {}) for approval in one_time_approvals)
 
+        if task.backend == AgentBackend.claude_code:
+            from app.services.task_attachments import attachment_directories
+            for path in attachment_directories(task.media):
+                project_rules.append({
+                    "backend": "claude_code",
+                    "decision": "deny",
+                    "claude_pattern": f"Edit({path}/**)",
+                })
+
         directory_paths = [
             binding.directory.path if binding.directory else binding.path
             for binding in project.directories
@@ -926,6 +936,11 @@ class ProcessManager:
             primary_directory = None
         if primary_directory:
             directory_paths = [primary_directory, *[path for path in directory_paths if path != primary_directory]]
+        if task.backend == AgentBackend.claude_code:
+            from app.services.task_attachments import attachment_directories
+            directory_paths.extend(
+                path for path in attachment_directories(task.media) if path not in directory_paths
+            )
 
         memory_directory = None
         if task.cron_job_id is not None:
@@ -1016,7 +1031,8 @@ class ProcessManager:
                 "[Earlier conversation omitted to fit the runtime handoff.]\n\n"
                 + conversation[-max_conversation_chars:]
             )
-        brief = task.initial_prompt[:8_000]
+        from app.services.task_attachments import render_prompt
+        brief = render_prompt(task.initial_prompt[:8_000], task.media)
         return (
             f"You are taking over an existing task from {_backend_label(previous_backend)}. "
             f"Continue it using {_backend_label(next_backend)} in the current project working "

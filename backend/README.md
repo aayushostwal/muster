@@ -52,6 +52,14 @@ Creating a Task or posting a chat message are both fire-and-forget triggers
 into this manager — there is deliberately no separate "run" action anywhere
 in the API.
 
+Task creation accepts up to ten images or files, each no larger than 25 MB.
+Uploads are stored in a task-specific directory beneath `~/.muster/data/media`,
+shown with the original brief, and kept outside the agent's writable roots. The
+runtime prompt includes each attachment's owner-readable absolute path so both
+Claude Code and Codex can inspect it immediately. Pending uploads expire after
+24 hours, total attachment storage is capped at 2 GB, and deleting a task removes
+its files.
+
 **MCP server** (`app/mcp_server.py`) — a local stdio adapter for Codex, Claude
 Code, and other MCP clients. It exposes project discovery and the core Task
 lifecycle as MCP tools, but deliberately calls the loopback REST API instead
@@ -171,7 +179,7 @@ For multiple Jira sites or Slack workspaces, include the site/workspace in the
 key. Do not use a run timestamp, title, or changing issue status as the key.
 Manual API task creation may omit it. Existing unkeyed tasks are not automatically
 matched, and deleting a task releases its key. Apply migration
-`0015_recurring_run_controls` before loading the updated backend.
+`0017_task_attachments` before loading the updated backend.
 
 ```bash
 pip install -r requirements.txt

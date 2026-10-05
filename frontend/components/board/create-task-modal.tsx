@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { MultiSelect, Select } from "@/components/ui/select";
 import { useToast } from "@/components/ui/toast";
+import { TaskAttachmentPicker } from "@/components/task/task-attachment-picker";
 import { api } from "@/lib/api";
 import type { AgentBackend } from "@/lib/types";
 import { backendLabel, cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ export function CreateTaskModal({ projectId, open, onClose }: { projectId: strin
   const [thinking, setThinking] = useState("medium");
   const [tags, setTags] = useState<string[]>([]);
   const [agentId, setAgentId] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState("");
   const agents = useQuery({ queryKey: ["registry", "agents"], queryFn: api.agents, enabled: open });
   const tagCatalog = useQuery({ queryKey: ["project-task-tags", projectId], queryFn: () => api.projectTaskTags(projectId), enabled: open });
@@ -36,8 +38,11 @@ export function CreateTaskModal({ projectId, open, onClose }: { projectId: strin
   });
   const enabledAgentIds = new Set(agentAccess.data?.items.filter((item) => item.enabled).map((item) => item.resource_id));
   const create = useMutation({
-    mutationFn: () => api.createTask(projectId, { title: title.trim(), initial_prompt: prompt.trim(), backend: backend === "inherit" ? undefined : backend, model: models[0], fallback_models: models.slice(1), tags, thinking_level: thinking, agent_id: agentId || undefined }),
-    onSuccess: (task) => { queryClient.invalidateQueries({ queryKey: ["tasks", projectId] }); toast("Task queued and agent started", "success"); onClose(); router.push(`/tasks/${task.id}`); },
+    mutationFn: async () => {
+      const media = await Promise.all(files.map(api.uploadTaskAttachment));
+      return api.createTask(projectId, { title: title.trim(), initial_prompt: prompt.trim(), backend: backend === "inherit" ? undefined : backend, model: models[0], fallback_models: models.slice(1), tags, thinking_level: thinking, agent_id: agentId || undefined, media });
+    },
+    onSuccess: (task) => { queryClient.invalidateQueries({ queryKey: ["tasks", projectId] }); setFiles([]); toast("Task queued and agent started", "success"); onClose(); router.push(`/tasks/${task.id}`); },
     onError: (cause: Error) => setError(cause.message),
   });
   const submit = (event: FormEvent) => { event.preventDefault(); if (!title.trim() || !prompt.trim()) return setError("Title and execution brief are required."); setError(""); create.mutate(); };
@@ -46,6 +51,7 @@ export function CreateTaskModal({ projectId, open, onClose }: { projectId: strin
       <form onSubmit={submit} className="space-y-5">
         <div><label className="label" htmlFor="task-title">Task title</label><input id="task-title" className="field" value={title} onChange={(event) => setTitle(event.target.value)} autoFocus maxLength={300} /></div>
         <div><div className="mb-2 flex items-center justify-between"><label className="text-xs font-medium text-slate-300" htmlFor="task-prompt">Execution brief</label><span className="font-mono text-[0.62rem] text-slate-700">{prompt.length} characters</span></div><textarea id="task-prompt" className="field min-h-40 resize-y leading-6" value={prompt} onChange={(event) => setPrompt(event.target.value)} /></div>
+        <div><label className="label">Context files <span className="text-slate-600">— optional, 25 MB each</span></label><TaskAttachmentPicker files={files} onChange={setFiles} disabled={create.isPending} onError={setError} /></div>
         <fieldset><legend className="label">Agent backend</legend><div className="grid gap-2 sm:grid-cols-3">{(["inherit", "claude_code", "codex"] as const).map((item) => <button key={item} type="button" onClick={() => setBackend(item)} aria-pressed={backend === item} className={cn("rounded-xl border p-3 text-left transition", backend === item ? "border-signal-400/30 bg-signal-400/[0.07]" : "border-white/[0.08] bg-white/[0.02] hover:border-white/15")}><Bot className={cn("h-4 w-4", backend === item ? "text-signal-400" : "text-slate-600")} /><span className="mt-2 block text-xs font-medium text-slate-200">{item === "inherit" ? "Project default" : backendLabel(item)}</span>{item === "inherit" && <span className="mt-1 block text-[0.62rem] text-slate-600">{project.data ? backendLabel(project.data.default_backend) : "Loading"}</span>}</button>)}</div></fieldset>
         <div className="grid gap-4 sm:grid-cols-2"><div><label className="label">Agent profile <span className="text-slate-600">— optional</span></label><Select label="Use project default" value={agentId} onChange={setAgentId} options={[{ value: "", label: "Project default" }, ...(agents.data?.items.filter((item) => item.enabled && enabledAgentIds.has(item.id)).map((item) => ({ value: item.id, label: item.name, description: item.description || "Works with Claude and Codex" })) ?? [])]} /><p className="mt-1.5 text-[0.6rem] text-slate-700">Profiles provide instructions only. Runtime, model, and thinking remain independent.</p></div><div><label className="label">Thinking level</label><Select label="Thinking level" value={thinking} onChange={setThinking} options={["low", "medium", "high", "xhigh", "max"].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} /></div></div>
         <div><label className="label">Workflow tags <span className="text-slate-600">— optional</span></label><MultiSelect label={tagCatalog.isPending ? "Loading project tags" : "Add task tags"} values={tags} onChange={setTags} options={(tagCatalog.data?.items ?? []).filter((tag) => tag.kind !== "system").map((tag) => ({ value: tag.name, label: tag.name, description: tag.kind === "preset" ? "Workflow preset" : "Project tag" }))} disabled={tagCatalog.isPending} /><p className="mt-1.5 text-[0.6rem] text-slate-700">PR and Canvas labels appear automatically after verified workflow events. Create or rename custom tags from the command center.</p></div>
