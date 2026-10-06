@@ -31,6 +31,7 @@ import type {
   TaskInvocation,
   Secret,
   Task,
+  TaskAttachment,
   ToolApproval,
   ToolBinding,
   ToolRuleConfig,
@@ -60,12 +61,10 @@ export function apiBase(): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(`${apiBase()}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
+    headers: isFormData ? init?.headers : { "Content-Type": "application/json", ...init?.headers },
   });
 
   if (!response.ok) {
@@ -133,6 +132,11 @@ export const api = {
     request<ListResponse<Task>>(`/api/projects/${projectId}/tasks`),
   allTasks: () => request<ListResponse<Task>>("/api/tasks"),
   task: (id: string) => request<Task>(`/api/tasks/${id}`),
+  uploadTaskAttachment: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return request<TaskAttachment>("/api/task-attachments", { method: "POST", body });
+  },
   createTask: (
     projectId: string,
     body: {
@@ -151,6 +155,7 @@ export const api = {
       thinking_level?: string;
       agent_id?: string;
       runtime_mode?: RuntimeMode;
+      media?: TaskAttachment[];
     },
   ) => request<Task>(`/api/projects/${projectId}/tasks`, { method: "POST", ...json(body) }),
   deleteTask: (id: string) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),

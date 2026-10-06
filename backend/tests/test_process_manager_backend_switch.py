@@ -43,7 +43,14 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
         task = Task(
             project_id=project.id,
             title="Continue elsewhere",
-            initial_prompt="Implement the original feature.",
+            initial_prompt="Implement the original feature." + (" detail" * 1500),
+            media=[{
+                "name": "reference.png",
+                "path": "/private/task-media/reference.png",
+                "mime": "image/png",
+                "size": 10,
+                "url": "/api/task-attachments/example/reference.png",
+            }],
             status=TaskStatus.done,
             attention_reason="awaiting_review",
             backend=AgentBackend.claude_code,
@@ -127,6 +134,7 @@ async def test_switch_backend_starts_fresh_session_with_conversation_handoff(
     assert spawn.await_args.args == (task_id,)
     handoff = spawn.await_args.kwargs["initial_prompt"]
     assert "ORIGINAL BRIEF\nImplement the original feature." in handoff
+    assert "/private/task-media/reference.png" in handoff
     assert "[USER]\nKeep the API backwards compatible." in handoff
     assert "<magic_canvas_snapshots>" in handoff
     assert "# Current contract" in handoff

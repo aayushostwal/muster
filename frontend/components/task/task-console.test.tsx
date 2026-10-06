@@ -26,7 +26,7 @@ import { TaskConsole } from "./task-console";
 const closed = {
   id: "task-1", project_id: "project-1", title: "Update PR #43", backend: "codex",
   runtime_mode: "interactive", status: "waiting_on_you", attention_reason: "awaiting_review",
-  initial_prompt: "Fix authorization", model: "gpt-5.6-sol", thinking_level: "medium",
+  initial_prompt: "Fix authorization", media: [], model: "gpt-5.6-sol", thinking_level: "medium",
   tags: [], fallback_models: [], completed_at: null,
 };
 

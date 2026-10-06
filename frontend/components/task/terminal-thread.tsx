@@ -8,12 +8,15 @@ import {
   CircleAlert,
   Code2,
   CornerDownRight,
+  FileText,
+  Image as ImageIcon,
   Sparkles,
   User,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from "react";
 
 import { MarkdownContent } from "@/components/ui/markdown-content";
+import { apiBase } from "@/lib/api";
 import { extractMagicArtifact } from "@/lib/magic-canvas";
 import { Skeleton } from "@/components/ui/states";
 import type { Message, Task, TaskInvocation } from "@/lib/types";
@@ -152,6 +155,16 @@ function TerminalBrief({ task, collapsed }: { task: Task; collapsed: boolean }) 
           >
             <div className="border-t border-white/[0.05] bg-pulse-400/[0.025] px-4 py-3.5 sm:pl-9">
               <MarkdownContent content={task.initial_prompt} />
+              {task.media.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2 border-t border-white/[0.06] pt-3">
+                  {task.media.map((attachment) => (
+                    <a key={attachment.path} href={`${apiBase()}${attachment.url}`} target="_blank" rel="noreferrer" className="flex max-w-full items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.025] px-2.5 py-2 text-xs text-slate-400 transition hover:border-pulse-400/25 hover:text-pulse-200">
+                      {attachment.mime.startsWith("image/") ? <ImageIcon className="h-3.5 w-3.5 shrink-0 text-pulse-400" /> : <FileText className="h-3.5 w-3.5 shrink-0" />}
+                      <span className="max-w-56 truncate">{attachment.name}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         )}

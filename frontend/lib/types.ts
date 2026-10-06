@@ -62,6 +62,7 @@ export interface Task {
   project_id: string;
   title: string;
   initial_prompt: string;
+  media: TaskAttachment[];
   status: TaskStatus;
   /** Only meaningful while status === "waiting_on_you". */
   attention_reason: "blocking_question" | "tool_permission" | "awaiting_review" | null;
@@ -79,6 +80,14 @@ export interface Task {
   started_at: string | null;
   completed_at: string | null;
   cron_job_id: string | null;
+}
+
+export interface TaskAttachment {
+  name: string;
+  path: string;
+  mime: string;
+  size: number;
+  url: string;
 }
 
 export interface Message {

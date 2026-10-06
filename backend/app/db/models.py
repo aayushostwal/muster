@@ -225,6 +225,7 @@ class Task(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     initial_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    media: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[TaskStatus] = mapped_column(
         Enum(TaskStatus, name="task_status"), default=TaskStatus.queued, index=True
     )

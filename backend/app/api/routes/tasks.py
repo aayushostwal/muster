@@ -25,7 +25,7 @@ from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.run_attempt import TaskRunAttemptRead
 from app.schemas.task import TaskBackendUpdate, TaskContextStrategyUpdate, TaskCreate, TaskModelsUpdate, TaskModelUpdate, TaskRead, TaskTagsUpdate, TaskThinkingUpdate
 from app.services.process_manager import process_manager
-from app.services import task_sources
+from app.services import task_attachments, task_sources
 
 router = APIRouter(tags=["tasks"])
 
@@ -128,11 +128,14 @@ async def _create_task(project_id: uuid.UUID, body: TaskCreate, response: Respon
     runtime_mode = body.runtime_mode or RuntimeMode(settings.default_task_runtime_mode)
     if runtime_mode == RuntimeMode.interactive and not settings.interactive_terminal_enabled:
         raise HTTPException(status_code=422, detail="Interactive terminal runtime is disabled")
+    media = task_attachments.validate(body.media)
     task = Task(
+        id=uuid.uuid4(),
         project_id=project_id,
         source_key=body.source_key,
         title=body.title,
         initial_prompt=body.initial_prompt + (f"\n\nLatest source update:\n{body.source_update}" if body.source_update else ""),
+        media=media,
         status=TaskStatus.queued,
         backend=body.backend or project.default_backend,
         runtime_mode=runtime_mode,
@@ -144,15 +147,20 @@ async def _create_task(project_id: uuid.UUID, body: TaskCreate, response: Respon
         context_strategy=body.context_strategy or project.default_context_strategy,
     )
     db.add(task)
+    claimed = False
     try:
         await db.flush()
+        task_attachments.claim(media, task.id)
+        claimed = True
         if body.source_key is not None:
             await task_sources.bind_source(db, task, body.source_key)
         event = await task_sources.record_update(db, task, body.source_event_key, body.source_update)
         await db.commit()
-    except IntegrityError:
+    except Exception as exc:
         await db.rollback()
-        if body.source_key is not None:
+        if claimed:
+            task_attachments.release(media, task.id)
+        if isinstance(exc, IntegrityError) and body.source_key is not None:
             existing = await existing_source_task()
             if existing is not None:
                 return await update_existing(existing)
@@ -186,10 +194,12 @@ async def get_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     task = await _get_task_or_404(db, task_id)
+    media = list(task.media or [])
     if task.status in (TaskStatus.queued, TaskStatus.running, TaskStatus.waiting_on_you):
         await process_manager.cancel(task_id)
     await db.delete(task)
     await db.commit()
+    task_attachments.delete(media, task_id)
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskRead)

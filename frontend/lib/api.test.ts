@@ -123,6 +123,20 @@ describe("API client", () => {
     if (method === "DELETE") expect(result).toBeUndefined();
   });
 
+  it("uploads attachments as multipart data without a JSON content type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201, json: vi.fn().mockResolvedValue({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    const file = new File(["image"], "screen.png", { type: "image/png" });
+
+    await api.uploadTaskAttachment(file);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.example.test/api/task-attachments");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.headers).toBeUndefined();
+  });
+
   it("uses the environment/default base URL outside browser runtime", () => {
     const original = process.env.NEXT_PUBLIC_API_URL;
     vi.stubGlobal("window", undefined);
