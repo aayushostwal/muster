@@ -70,6 +70,16 @@ export function LiveTerminal({ taskId }: { taskId: string }) {
       fitAddon = new XTermFitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(containerRef.current);
+      terminal.attachCustomKeyEventHandler((event) => {
+        if (event.key !== "Enter" || !event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return true;
+        // Ctrl+J is the native newline shortcut; keep plain Enter on xterm's
+        // normal carriage-return path so it submits the prompt.
+        if (event.type === "keydown") {
+          event.preventDefault();
+          sendText("\n");
+        }
+        return false;
+      });
       terminalRef.current = terminal;
       fitRef.current = fitAddon;
       if (pendingGapRef.current) {
@@ -110,11 +120,15 @@ export function LiveTerminal({ taskId }: { taskId: string }) {
 
   return (
     <div className="relative h-full min-h-0 bg-[#05070b]">
-      <div
-        ref={containerRef}
-        className={cn("h-full min-h-0 px-2 pb-2 pt-12 transition-opacity", showHistory ? "hidden" : ready ? "opacity-100" : "opacity-0")}
-        aria-label="Interactive agent terminal"
-      />
+      <div className={cn("h-full min-h-0 px-2 pb-6 pt-12", showHistory && "hidden")}>
+        {/* FitAddon measures this element's full height. Keep padding on its
+            parent so the terminal's last rows fit above the bottom gutter. */}
+        <div
+          ref={containerRef}
+          className={cn("h-full min-h-0 transition-opacity", ready ? "opacity-100" : "opacity-0")}
+          aria-label="Interactive agent terminal"
+        />
+      </div>
       {showHistory && <div className="absolute inset-0 pt-12"><TerminalHistory taskId={taskId} /></div>}
       {!ready && !showHistory && <div className="absolute inset-0 grid place-items-center font-mono text-xs text-slate-600">Starting terminal renderer…</div>}
       <div className="absolute left-3 top-3 z-10 flex gap-2">
